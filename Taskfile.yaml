@@ -1,0 +1,29 @@
+version: '3'
+
+includes:
+    claude: .tk/claude/Taskfile.yaml
+    default: .tk/default/Taskfile.yaml
+    git: .tk/git/Taskfile.yaml
+    golangci: .tk/golangci/Taskfile.yaml
+    install: .tk/install/Taskfile.yaml
+    license: .tk/license/Taskfile.yaml
+    trufflehog: .tk/trufflehog/Taskfile.yaml
+
+tasks:
+  build:
+    desc: Build runtime binary for linux
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o runtime ./cmd/openotters-runtime/
+
+  image:
+    desc: Build runtime Docker image and load into Kind
+    deps: [build]
+    cmds:
+      - docker build -t openotters/runtime:latest -f Dockerfile .
+      - kind load docker-image openotters/runtime:latest
+      - rm -f runtime
+
+  run:
+    desc: Run the runtime locally
+    cmds:
+      - go run ./cmd/openotters-runtime/ {{.CLI_ARGS}}

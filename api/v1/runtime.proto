@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package openotters.runtime.v1;
+
+option go_package = "github.com/openotters/runtime/api/v1;runtimev1";
+
+service AgentRuntime {
+  // Chat
+  rpc Chat(ChatRequest) returns (ChatResponse);
+  rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamEvent);
+
+  // Sessions
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+
+  // Probes
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Ready(ReadyRequest) returns (ReadyResponse);
+}
+
+// Chat
+
+message ChatRequest {
+  string session_id = 1;
+  string prompt = 2;
+}
+
+message ChatResponse {
+  string response = 1;
+}
+
+message ChatStreamRequest {
+  string session_id = 1;
+  string prompt = 2;
+}
+
+message ChatStreamEvent {
+  string type = 1;
+  int32 step = 2;
+  string tool = 3;
+  string content = 4;
+}
+
+// Sessions
+
+message ListSessionsRequest {}
+
+message SessionInfo {
+  string id = 1;
+  int32 message_count = 2;
+  int64 last_active = 3;
+}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+message DeleteSessionResponse {}
+
+// Probes
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string agent_name = 2;
+  string model = 3;
+}
+
+message ReadyRequest {}
+
+message ReadyResponse {
+  bool ready = 1;
+}

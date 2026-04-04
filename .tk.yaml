@@ -1,0 +1,5 @@
+ignore_readme: false
+ignore_taskfile: false
+excludes:
+    - markdownlint
+    - goreleaser
