@@ -23,7 +23,7 @@ func (p *Prompt) Run(
 ) error {
 	logger := common.MustLogger().Named("openotters-prompt")
 
-	setup, err := p.AgentConfig.setup(ctx, sqlite, logger)
+	setup, err := p.setup(ctx, sqlite, logger)
 	if err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func (p *Prompt) Run(
 		case "tool.result":
 			fmt.Fprintf(os.Stderr, "[tool.result] %s: %s\n", event.ToolName, truncate(event.Content, 200))
 		case "text.delta":
-			fmt.Print(event.Content)
+			os.Stdout.WriteString(event.Content)
 		}
 	}
 
@@ -53,15 +53,15 @@ func (p *Prompt) Run(
 		return fmt.Errorf("agent: %w", err)
 	}
 
-	fmt.Println()
+	os.Stdout.WriteString("\n")
 
 	return nil
 }
 
-func truncate(s string, max int) string {
+func truncate(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
-	if len(s) > max {
-		return s[:max] + "..."
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
 	}
 
 	return s

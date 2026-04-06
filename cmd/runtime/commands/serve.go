@@ -10,12 +10,12 @@ import (
 	"syscall"
 
 	"github.com/merlindorin/go-shared/pkg/cmd"
+	"github.com/openotters/runtime/internal"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	runtimev1 "github.com/openotters/runtime/api/v1"
-	"github.com/openotters/runtime/internal/server"
 )
 
 type Serve struct {
@@ -38,7 +38,7 @@ func (s *Serve) Run(
 		zap.String("addr", s.Addr),
 	)
 
-	setup, err := s.AgentConfig.setup(ctx, sqlite, logger)
+	setup, err := s.setup(ctx, sqlite, logger)
 	if err != nil {
 		return err
 	}
@@ -49,10 +49,11 @@ func (s *Serve) Run(
 	)
 
 	srv := grpc.NewServer()
-	runtimev1.RegisterAgentRuntimeServer(srv, server.NewGRPCServer(setup.svc, s.Name, s.Model))
+	runtimev1.RegisterAgentRuntimeServer(srv, internal.NewGRPCServer(setup.svc, s.Name, s.Model))
 	reflection.Register(srv)
 
-	lis, err := net.Listen("tcp", s.Addr)
+	lc := net.ListenConfig{}
+	lis, err := lc.Listen(ctx, "tcp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.Addr, err)
 	}

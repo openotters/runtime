@@ -7,7 +7,7 @@ import (
 	kongyaml "github.com/alecthomas/kong-yaml"
 	c "github.com/merlindorin/go-shared/pkg/cmd"
 
-	"github.com/openotters/runtime/cmd/openotters-runtime/commands"
+	"github.com/openotters/runtime/cmd/runtime/commands"
 )
 
 const (

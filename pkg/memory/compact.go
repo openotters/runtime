@@ -134,7 +134,7 @@ func (c *Compactor) summarize(
 	var b strings.Builder
 
 	for _, m := range oldMsgs {
-		b.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, messageText(m)))
+		fmt.Fprintf(&b, "[%s]: %s\n", m.Role, messageText(m))
 	}
 
 	instruction := "Summarize the following conversation concisely, " +

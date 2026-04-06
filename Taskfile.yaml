@@ -11,19 +11,11 @@ includes:
 
 tasks:
   build:
-    desc: Build runtime binary for linux
+    desc: Build runtime binary
     cmds:
-      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o runtime ./cmd/openotters-runtime/
-
-  image:
-    desc: Build runtime Docker image and load into Kind
-    deps: [build]
-    cmds:
-      - docker build -t openotters/runtime:latest -f Dockerfile .
-      - kind load docker-image openotters/runtime:latest
-      - rm -f runtime
+      - CGO_ENABLED=0 go build -o runtime ./cmd/runtime/
 
   run:
     desc: Run the runtime locally
     cmds:
-      - go run ./cmd/openotters-runtime/ {{.CLI_ARGS}}
+      - go run ./cmd/runtime/ {{.CLI_ARGS}}

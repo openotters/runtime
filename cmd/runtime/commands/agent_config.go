@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/merlindorin/go-shared/pkg/cmd"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 
 	"github.com/openotters/runtime/pkg/agent"
 	"github.com/openotters/runtime/pkg/memory"
@@ -69,6 +70,8 @@ type agentSetup struct {
 func (c *AgentConfig) setup(
 	ctx context.Context, sqlite *cmd.SQLite, logger *zap.Logger,
 ) (*agentSetup, error) {
+	c.loadAgentConfig(logger)
+
 	if c.Model == "" {
 		return nil, fmt.Errorf(
 			"model is required: use --model provider/model (e.g. anthropic/claude-sonnet-4-20250514)",
@@ -205,4 +208,57 @@ func parseModel(model string) (string, string) {
 	}
 
 	return "", model
+}
+
+type agentYAML struct {
+	Name    string            `yaml:"name"`
+	Model   string            `yaml:"model"`
+	Configs map[string]string `yaml:"configs,omitempty"`
+	Tools   []struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Binary      string `yaml:"binary"`
+	} `yaml:"tools,omitempty"`
+}
+
+// loadAgentConfig reads etc/agent.yaml from the root directory and applies
+// values as defaults — CLI flags and env vars still take precedence.
+func (c *AgentConfig) loadAgentConfig(logger *zap.Logger) {
+	path := filepath.Join(c.Root, "etc", "agent.yaml")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	var cfg agentYAML
+	if err = yaml.Unmarshal(data, &cfg); err != nil {
+		logger.Warn("failed to parse agent config", zap.String("path", path), zap.Error(err))
+		return
+	}
+
+	if c.Name == "agent" && cfg.Name != "" {
+		c.Name = cfg.Name
+	}
+
+	if c.Model == "" && cfg.Model != "" {
+		c.Model = cfg.Model
+	}
+
+	if len(c.Tools) == 0 && len(cfg.Tools) > 0 {
+		for _, t := range cfg.Tools {
+			binary := t.Binary
+			if !filepath.IsAbs(binary) {
+				binary = filepath.Join(c.Root, binary)
+			}
+
+			c.Tools = append(c.Tools, ToolConfig{
+				Name:        t.Name,
+				Description: t.Description,
+				Binary:      binary,
+			})
+		}
+	}
+
+	logger.Info("loaded agent config", zap.String("path", path))
 }

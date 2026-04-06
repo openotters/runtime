@@ -31,7 +31,7 @@ func BuildSystemPrompt(workspaceDir string, files []string) (string, error) {
 			b.WriteString("\n\n---\n\n")
 		}
 
-		b.WriteString(fmt.Sprintf("## %s\n\n%s\n", filename, content))
+		fmt.Fprintf(&b, "## %s\n\n%s\n", filename, content)
 	}
 
 	return b.String(), nil
