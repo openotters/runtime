@@ -1,6 +1,7 @@
 # runtime
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/openotters/runtime.svg)](https://pkg.go.dev/github.com/openotters/runtime)
+[![golangci-lint](https://github.com/openotters/runtime/actions/workflows/golangci.yml/badge.svg)](https://github.com/openotters/runtime/actions/workflows/golangci.yml)
 [![License](https://img.shields.io/github/license/openotters/runtime)](LICENSE)
 
 Single-agent gRPC runtime for OpenOtters. Runs one agent with tools, memory, and multi-session support.
@@ -78,3 +79,7 @@ Configured via `etc/agent.yaml` configs:
 
 - **summarize**: sends oldest messages to the LLM for summarization, keeps recent half
 - **sliding**: drops oldest messages, keeps the last N
+
+## License
+
+See [LICENSE](LICENSE.md).
