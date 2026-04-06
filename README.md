@@ -1,6 +1,7 @@
 # runtime
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/openotters/runtime.svg)](https://pkg.go.dev/github.com/openotters/runtime)
+[![Go Report Card](https://goreportcard.com/badge/github.com/openotters/runtime)](https://goreportcard.com/report/github.com/openotters/runtime)
 [![golangci-lint](https://github.com/openotters/runtime/actions/workflows/golangci.yml/badge.svg)](https://github.com/openotters/runtime/actions/workflows/golangci.yml)
 [![License](https://img.shields.io/github/license/openotters/runtime)](LICENSE)
 
