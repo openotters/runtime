@@ -1,10 +1,5 @@
 FROM scratch
 
-RUNTIME ghcr.io/openotters/runtime:latest
+RUNTIME ghcr.io/openotters/runtime:v1
 MODEL anthropic/claude-sonnet-4-5-20250929
-NAME hello
-
-CONTEXT SOUL <<EOF
-You are a friendly minimal agent used to smoke-test the openotters
-runtime. Say hi, answer one question, keep it under 50 words.
-EOF
+NAME base

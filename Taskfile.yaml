@@ -30,24 +30,26 @@ tasks:
       - go clean -testcache
 
   image:publish:
-    desc: Cross-build the runtime and push it as a multi-arch BIN image (ghcr.io/openotters/runtime:TAG).
+    desc: Cross-build the runtime and push as multi-arch BIN image via the local daemon. Set TAGS="v1.0.0-alpha.1 v1.0.0 v1.0 v1 latest" for the full cadence.
     vars:
-      TAG: '{{.TAG | default "latest"}}'
+      TAGS: '{{.TAGS | default "latest"}}'
       REGISTRY: '{{.REGISTRY | default "ghcr.io/openotters"}}'
       OUT_DIR: '{{.OUT_DIR | default "/tmp/otters-runtime"}}'
-      BINTOOL: '{{.BINTOOL | default "github.com/openotters/bin/examples/build@v1.0.0-alpha"}}'
+      OTTERS: '{{.OTTERS | default "otters"}}'
     cmds:
       - mkdir -p {{.OUT_DIR}}
       - GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o {{.OUT_DIR}}/runtime-darwin-arm64 ./cmd/runtime
       - GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o {{.OUT_DIR}}/runtime-darwin-amd64 ./cmd/runtime
       - GOOS=linux  GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o {{.OUT_DIR}}/runtime-linux-arm64  ./cmd/runtime
       - GOOS=linux  GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o {{.OUT_DIR}}/runtime-linux-amd64  ./cmd/runtime
+      # One build call into the daemon's local registry, tagged with every
+      # alias in TAGS at once. Each push then picks one tag and ships it.
       - >-
-        go run {{.BINTOOL}}
-        -name runtime
-        -desc "openotters agent runtime"
-        {{.REGISTRY}}/runtime:{{.TAG}}
+        flags=""; for t in {{.TAGS}}; do flags="$flags -t {{.REGISTRY}}/runtime:$t"; done;
+        {{.OTTERS}} bin build -n runtime -d "openotters agent runtime" $flags
         darwin/arm64:{{.OUT_DIR}}/runtime-darwin-arm64
         darwin/amd64:{{.OUT_DIR}}/runtime-darwin-amd64
         linux/arm64:{{.OUT_DIR}}/runtime-linux-arm64
         linux/amd64:{{.OUT_DIR}}/runtime-linux-amd64
+      - for: {var: TAGS}
+        cmd: '{{.OTTERS}} bin push {{.REGISTRY}}/runtime:{{.ITEM}}'
