@@ -48,6 +48,7 @@ type AgentConfig struct {
 
 	APIKey  string `help:"API key for the provider" optional:""`
 	APIBase string `help:"Custom API base URL for the provider" optional:""`
+	Addr    string `help:"gRPC listen address" default:":8080"`
 
 	Tools     []ToolConfig      `help:"Tool configurations" yaml:"tools,omitempty" json:"tools,omitempty"`
 	Neighbors []NeighborConfig  `help:"Neighbor agent configurations" yaml:"neighbors,omitempty" json:"neighbors,omitempty"`
@@ -99,6 +100,11 @@ func (c *AgentConfig) setup(
 
 	provider, modelName := parseModel(c.Model)
 
+	// validateModel was an OpenAI-compatible /models/<name> probe; it 404s
+	// on Anthropic and would 401 on most non-OpenAI providers without
+	// per-flavour adapters. Real model errors surface on the first
+	// fantasy.Generate call anyway, so we skip the early probe.
+
 	fantasyAgent, lm, err := agent.CreateAgent(ctx, agent.Config{
 		Provider: provider, ModelName: modelName,
 		APIKey: c.APIKey, APIBase: c.APIBase,
@@ -108,7 +114,9 @@ func (c *AgentConfig) setup(
 		return nil, err
 	}
 
-	store, err := c.openStore(sqlite)
+	logger.Info("model validated", zap.String("model", c.Model))
+
+	store, err := c.openStore(ctx, sqlite)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +168,7 @@ func (c *AgentConfig) discoverContextFiles() ([]string, error) {
 	return files, nil
 }
 
-func (c *AgentConfig) openStore(sqlite *cmd.SQLite) (*memory.Store, error) {
+func (c *AgentConfig) openStore(ctx context.Context, sqlite *cmd.SQLite) (*memory.Store, error) {
 	if sqlite.Path == ":memory:" {
 		sqlite.Path = c.dbPath()
 	}
@@ -170,7 +178,7 @@ func (c *AgentConfig) openStore(sqlite *cmd.SQLite) (*memory.Store, error) {
 		return nil, err
 	}
 
-	return memory.NewStore(db)
+	return memory.NewStore(ctx, db)
 }
 
 func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error) {
@@ -187,7 +195,7 @@ func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error)
 		}
 	}
 
-	tools, err := tool.LoadTools(defs, c.dataDir(), logger)
+	tools, err := tool.LoadTools(defs, c.Root, logger)
 	if err != nil {
 		return nil, err
 	}

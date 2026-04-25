@@ -3,7 +3,7 @@ package internal
 import (
 	"context"
 
-	runtimev1 "github.com/openotters/runtime/api/v1"
+	runtimev1 "github.com/openotters/agentfile/agent/api/v1"
 	"github.com/openotters/runtime/pkg/agent"
 )
 
@@ -25,6 +25,24 @@ func (s *GRPCServer) Chat(ctx context.Context, req *runtimev1.ChatRequest) (*run
 	}
 
 	return &runtimev1.ChatResponse{Response: response}, nil
+}
+
+func (s *GRPCServer) PromptObject(
+	ctx context.Context, req *runtimev1.PromptObjectRequest,
+) (*runtimev1.PromptObjectResponse, error) {
+	object, raw, err := s.svc.PromptObject(
+		ctx,
+		req.GetPrompt(), req.GetSchemaJson(),
+		req.GetSchemaName(), req.GetSchemaDesc(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &runtimev1.PromptObjectResponse{
+		ObjectJson: object,
+		RawText:    raw,
+	}, nil
 }
 
 func (s *GRPCServer) ChatStream(
@@ -78,6 +96,26 @@ func (s *GRPCServer) DeleteSession(
 	}
 
 	return &runtimev1.DeleteSessionResponse{}, nil
+}
+
+func (s *GRPCServer) ListSessionMessages(
+	ctx context.Context, req *runtimev1.ListSessionMessagesRequest,
+) (*runtimev1.ListSessionMessagesResponse, error) {
+	msgs, err := s.svc.ListSessionMessages(ctx, req.GetSessionId(), int(req.GetLimit()))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*runtimev1.SessionMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = &runtimev1.SessionMessage{
+			Role:      m.Role,
+			Content:   m.Content,
+			CreatedAt: m.CreatedAt,
+		}
+	}
+
+	return &runtimev1.ListSessionMessagesResponse{Messages: out}, nil
 }
 
 func (s *GRPCServer) Health(

@@ -13,16 +13,16 @@ type Store struct {
 	db *sql.DB
 }
 
-func NewStore(db *sql.DB) (*Store, error) {
-	if err := migrate(db); err != nil {
+func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
+	if err := migrate(ctx, db); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
 	return &Store{db: db}, nil
 }
 
-func migrate(db *sql.DB) error {
-	_, err := db.ExecContext(context.Background(), `
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,

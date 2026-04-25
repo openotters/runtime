@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/alecthomas/kong"
 	kongyaml "github.com/alecthomas/kong-yaml"
@@ -11,8 +14,8 @@ import (
 )
 
 const (
-	name        = "openotters-runtime"
-	description = "openotters autonomous AI agent runtime"
+	name        = "runtime"
+	description = "otters autonomous AI agent runtime"
 )
 
 //nolint:gochecknoglobals // set by ldflags at build time
@@ -40,11 +43,17 @@ func main() {
 		kong.Name(name),
 		kong.Description(description),
 		kong.UsageOnError(),
-		kong.DefaultEnvars("OPENOTTERS"),
+		kong.DefaultEnvars("OTTERS"),
 		kong.Configuration(kongyaml.Loader),
 	)
 
-	ctx.BindTo(context.Background(), (*context.Context)(nil))
+	// Signal-wired root context: ottersd sends SIGTERM to this
+	// subprocess on agent Stop/Remove; SIGINT catches Ctrl-C when
+	// `runtime serve` is launched directly for debugging.
+	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	ctx.BindTo(runCtx, (*context.Context)(nil))
 	ctx.FatalIfErrorf(ctx.Run(cli.Commons, cli.SQLite))
 }
 

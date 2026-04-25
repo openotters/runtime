@@ -39,7 +39,7 @@ func CreateAgent(
 		apiKey = os.Getenv(strings.ToUpper(cfg.Provider) + "_API_KEY")
 	}
 
-	if apiKey == "" {
+	if apiKey == "" && requiresAPIKey(cfg.Provider) {
 		return nil, nil, fmt.Errorf("no API key for provider %s", cfg.Provider)
 	}
 
@@ -70,6 +70,15 @@ func CreateAgent(
 	}
 
 	return fantasy.NewAgent(lm, opts...), lm, nil
+}
+
+func requiresAPIKey(provider string) bool {
+	switch provider {
+	case "anthropic", "openai", "openrouter":
+		return true
+	default:
+		return false
+	}
 }
 
 func createProvider(name, apiKey, apiBase string) (fantasy.Provider, error) {

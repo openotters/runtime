@@ -21,7 +21,7 @@ func (p *Prompt) Run(
 	common *cmd.Commons,
 	sqlite *cmd.SQLite,
 ) error {
-	logger := common.MustLogger().Named("openotters-prompt")
+	logger := common.MustLogger().Named("runtime-prompt")
 
 	setup, err := p.setup(ctx, sqlite, logger)
 	if err != nil {

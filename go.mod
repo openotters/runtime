@@ -1,16 +1,17 @@
 module github.com/openotters/runtime
 
-go 1.26.1
+go 1.26.2
 
 require (
 	charm.land/fantasy v0.17.1
 	github.com/alecthomas/kong v1.14.0
 	github.com/alecthomas/kong-yaml v0.2.0
 	github.com/merlindorin/go-shared v0.0.0-20260401200857-a37e8564e29e
+	github.com/openotters/agentfile v1.0.0-alpha
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.80.0
-	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.48.0
 )
 
 require (
@@ -78,15 +79,15 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834 // indirect
 	github.com/charmbracelet/openai-go v0.0.0-20260319145158-d0740cc34266 // indirect
-	github.com/charmbracelet/x/ansi v0.11.3 // indirect
-	github.com/charmbracelet/x/cellbuf v0.0.14 // indirect
+	github.com/charmbracelet/x/ansi v0.11.6 // indirect
+	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250904123553-b4e2667e5ad5 // indirect
 	github.com/charmbracelet/x/json v0.2.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/ckaznocha/intrange v0.3.1 // indirect
-	github.com/clipperhouse/displaywidth v0.6.1 // indirect
+	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
-	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect
 	github.com/daixiang0/gci v0.13.7 // indirect
 	github.com/dave/dst v0.27.3 // indirect
@@ -274,11 +275,11 @@ require (
 	google.golang.org/api v0.271.0 // indirect
 	google.golang.org/genai v1.51.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	honnef.co/go/tools v0.7.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.48.0 // indirect
 	mvdan.cc/gofumpt v0.9.2 // indirect
 	mvdan.cc/unparam v0.0.0-20251027182757-5beb8c8f8f15 // indirect
 )

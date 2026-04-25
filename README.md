@@ -24,7 +24,7 @@ The runtime is a standalone gRPC server that implements the
 the [agentfile executor](https://github.com/openotters/agentfile) and runs them as long-lived services.
 
 Given an agent root directory following the
-[Agentfile filesystem layout](https://github.com/openotters/agentfile/blob/main/specs/AGENTFILE-v0.0.1.md#agent-filesystem-layout),
+[Agentfile filesystem layout](https://github.com/openotters/agentfile/blob/main/AGENTFILE-v1.0.0.md#agent-filesystem-layout),
 the runtime:
 
 1. Reads `etc/agent.yaml` for agent configuration (name, model, tools)
@@ -35,16 +35,20 @@ the runtime:
 
 ## gRPC API
 
-| RPC             | Description                                                              |
-|-----------------|--------------------------------------------------------------------------|
-| `Chat`          | Send a prompt, get a response                                            |
-| `ChatStream`    | Send a prompt, receive streaming events (steps, tool calls, text deltas) |
-| `ListSessions`  | List active conversation sessions                                        |
-| `DeleteSession` | Delete a session and its history                                         |
-| `Health`        | Health check (agent name, model)                                         |
-| `Ready`         | Readiness probe                                                          |
+| RPC                   | Description                                                              |
+|-----------------------|--------------------------------------------------------------------------|
+| `Chat`                | Send a prompt, get a response                                            |
+| `ChatStream`          | Send a prompt, receive streaming events (steps, tool calls, text deltas) |
+| `PromptObject`        | One-shot structured JSON output against a supplied JSON Schema           |
+| `ListSessions`        | List active conversation sessions                                        |
+| `ListSessionMessages` | List the persisted messages for a single session                         |
+| `DeleteSession`       | Delete a session and its history                                         |
+| `Health`              | Health check (agent name, model)                                         |
+| `Ready`               | Readiness probe                                                          |
 
-Proto definition: [`api/v1/runtime.proto`](api/v1/runtime.proto)
+Proto definition lives in the agentfile repo at
+[`agent/api/v1/agent.proto`](https://github.com/openotters/agentfile/blob/main/agent/api/v1/agent.proto)
+so the client (ottersd) and server (this runtime) share one source of truth.
 
 ## Usage
 
@@ -65,8 +69,8 @@ explicitly.
 |----------------|-----------------------------------------------------------------|
 | `pkg/agent`    | Agent creation (provider selection, LLM setup) and chat service |
 | `pkg/memory`   | SQLite message store and history compaction (sliding/summarize) |
-| `pkg/tool`     | Tool binary loading and JSON stdin/stdout execution             |
-| `pkg/neighbor` | Inter-agent communication via HTTP                              |
+| `pkg/tool`     | Tool binary loading; argv-in, stdout-out execution              |
+| `pkg/neighbor` | Inter-agent communication helpers                               |
 
 ## Memory Compaction
 

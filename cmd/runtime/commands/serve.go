@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/merlindorin/go-shared/pkg/cmd"
 	"github.com/openotters/runtime/internal"
@@ -15,12 +12,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	runtimev1 "github.com/openotters/runtime/api/v1"
+	runtimev1 "github.com/openotters/agentfile/agent/api/v1"
 )
 
 type Serve struct {
 	AgentConfig `embed:""`
-	Addr        string `help:"gRPC listen address" default:":8080"`
 }
 
 func (s *Serve) Run(
@@ -28,7 +24,7 @@ func (s *Serve) Run(
 	common *cmd.Commons,
 	sqlite *cmd.SQLite,
 ) error {
-	logger := common.MustLogger().Named("openotters-runtime")
+	logger := common.MustLogger().Named("runtime")
 
 	logger.Info("starting",
 		zap.String("version", common.Version.Version()),
@@ -61,14 +57,7 @@ func (s *Serve) Run(
 	logger.Info("gRPC server listening", zap.String("addr", s.Addr))
 
 	go func() {
-		term := make(chan os.Signal, 1)
-		signal.Notify(term, os.Interrupt, syscall.SIGTERM)
-
-		select {
-		case <-ctx.Done():
-		case <-term:
-		}
-
+		<-ctx.Done()
 		logger.Info("shutting down")
 		srv.GracefulStop()
 	}()

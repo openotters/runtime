@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/schema"
 	"go.uber.org/zap"
 
 	"github.com/openotters/runtime/pkg/memory"
@@ -148,8 +150,117 @@ func (s *Service) ChatStream(
 	return response, nil
 }
 
+// PromptObject runs a one-shot, stateless structured-output query
+// against the underlying LanguageModel. No session memory is loaded
+// or saved, no tool loop is run — just prompt + schema in, parsed
+// object out. Matches fantasy.LanguageModel.GenerateObject one-to-one
+// and exists so the runtime's gRPC surface has a place to hang the
+// call without exposing the model type through Service's public API.
+//
+// schemaJSON must be a JSON Schema document that unmarshals into
+// fantasy/schema.Schema (common subset: type, properties, required,
+// items, enum, format, min/max). schemaName and schemaDesc surface
+// in tool-mode providers as the synthetic tool's name/description.
+//
+// ObjectMode (JSON / tool / text / auto) is provider-level — set
+// when the LanguageModel is constructed via e.g.
+// anthropic.WithObjectMode(...). This method doesn't override it
+// per-call because fantasy.ObjectCall has no per-call mode field.
+//
+// Returns (objectJSON, rawText). rawText is the model's unparsed
+// reply — useful for debugging when repair was needed.
+func (s *Service) PromptObject(
+	ctx context.Context,
+	prompt string, schemaJSON []byte, schemaName, schemaDesc string,
+) ([]byte, string, error) {
+	if s.model == nil {
+		return nil, "", fmt.Errorf("no language model bound to service")
+	}
+
+	if len(schemaJSON) == 0 {
+		return nil, "", fmt.Errorf("schema is required")
+	}
+
+	var parsed schema.Schema
+	if err := json.Unmarshal(schemaJSON, &parsed); err != nil {
+		return nil, "", fmt.Errorf("parsing schema: %w", err)
+	}
+
+	if parsed.Type == "" {
+		return nil, "", fmt.Errorf("schema must declare a top-level type")
+	}
+
+	call := fantasy.ObjectCall{
+		Prompt:            fantasy.Prompt{fantasy.NewUserMessage(prompt)},
+		Schema:            parsed,
+		SchemaName:        schemaName,
+		SchemaDescription: schemaDesc,
+	}
+
+	resp, err := s.model.GenerateObject(ctx, call)
+	if err != nil {
+		return nil, "", fmt.Errorf("generate object: %w", err)
+	}
+
+	out, err := json.Marshal(resp.Object)
+	if err != nil {
+		return nil, resp.RawText, fmt.Errorf("marshal object: %w", err)
+	}
+
+	s.logger.Info("prompt object completed",
+		zap.Int("response_bytes", len(out)),
+		zap.Int("raw_bytes", len(resp.RawText)),
+	)
+
+	return out, resp.RawText, nil
+}
+
 func (s *Service) ListSessions(ctx context.Context) ([]memory.SessionInfo, error) {
 	return s.store.ListSessions(ctx)
+}
+
+// SessionMessage is the plain wire-ready view of a stored chat message:
+// role, text, and its creation time. Compacted or summarised entries
+// already flow through the store as role=assistant, so callers get a
+// post-compaction view.
+type SessionMessage struct {
+	Role      string
+	Content   string
+	CreatedAt int64
+}
+
+// ListSessionMessages returns the recent messages stored for sessionID
+// in role/content form suitable for gRPC transport. limit <= 0 means
+// "use the store default" (LIMIT 50 today).
+func (s *Service) ListSessionMessages(ctx context.Context, sessionID string, _ int) ([]SessionMessage, error) {
+	fantasyMessages, err := s.store.GetMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]SessionMessage, 0, len(fantasyMessages))
+
+	for _, m := range fantasyMessages {
+		text := ""
+		for _, part := range m.Content {
+			if tp, ok := part.(fantasy.TextPart); ok {
+				text = tp.Text
+
+				break
+			}
+		}
+
+		if text == "" {
+			continue
+		}
+
+		out = append(out, SessionMessage{
+			Role:    string(m.Role),
+			Content: text,
+		})
+	}
+
+	return out, nil
 }
 
 func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
