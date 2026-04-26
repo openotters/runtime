@@ -80,6 +80,29 @@ func TestCreateAgent_PicksUpAPIKeyFromEnv(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_PicksUpAPIBaseFromEnv(t *testing.T) {
+	// Mirrors the existing _API_KEY env-fallback test: when
+	// cfg.APIBase is empty, we fall through to <PROVIDER>_API_BASE.
+	// Asserted via the no-error path on a provider (ollama →
+	// openaicompat) that requires no API key, so the test isolates
+	// the api-base resolution from the api-key resolution.
+	t.Setenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
+
+	_, _, err := CreateAgent(
+		context.Background(),
+		Config{
+			Provider:      "ollama",
+			ModelName:     "llama3.1:8b",
+			MaxTokens:     1024,
+			MaxIterations: 2,
+		},
+		"sys", nil, zap.NewNop(),
+	)
+	if err != nil {
+		t.Fatalf("CreateAgent with env API base: %v", err)
+	}
+}
+
 func TestCreateAgent_OllamaProviderWithoutAPIKey(t *testing.T) {
 	t.Parallel()
 

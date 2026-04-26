@@ -43,7 +43,12 @@ func CreateAgent(
 		return nil, nil, fmt.Errorf("no API key for provider %s", cfg.Provider)
 	}
 
-	provider, err := createProvider(cfg.Provider, apiKey, cfg.APIBase)
+	apiBase := cfg.APIBase
+	if apiBase == "" {
+		apiBase = os.Getenv(strings.ToUpper(cfg.Provider) + "_API_BASE")
+	}
+
+	provider, err := createProvider(cfg.Provider, apiKey, apiBase)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating provider: %w", err)
 	}

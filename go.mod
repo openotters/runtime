@@ -7,7 +7,7 @@ require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/alecthomas/kong-yaml v0.2.0
 	github.com/merlindorin/go-shared v0.0.0-20260401200857-a37e8564e29e
-	github.com/openotters/agentfile v1.0.0-alpha.3
+	github.com/openotters/agentfile v1.0.0-alpha.6
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.80.0
 	gopkg.in/yaml.v3 v3.0.1
