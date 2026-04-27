@@ -1,0 +1,56 @@
+name: release
+
+# Fires on semver tag push. Creates a GitHub Release with the
+# annotated tag's subject as the title and auto-generated notes
+# (commit list since the previous tag).
+#
+# Library module — no binaries to build, no goreleaser. Consumers
+# fetch the module via `go get <module>@<tag>`; this workflow only
+# exists so every tag gets a discoverable Release page on GitHub.
+#
+# Pre-1.0 and any -alpha / -beta / -rc tag is flagged as pre-release;
+# bare v1.x.y / v2.x.y promotes to a full release automatically.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The release notes call `git tag -l --format=...` against the
+          # current ref; we don't strictly need full history, but
+          # generate-notes needs the previous tag reachable to diff.
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Use the annotated tag's subject as the release title.
+          # Falls back to the tag name when the tag is lightweight.
+          subject=$(git tag -l --format='%(contents:subject)' "$TAG")
+          if [ -z "$subject" ]; then
+            subject="$TAG"
+          fi
+
+          # Pre-release flag for v0.x.y or any pre-1.0 alpha/beta/rc.
+          prerelease_flag=""
+          case "$TAG" in
+            v0.*|v*-alpha*|v*-beta*|v*-rc*) prerelease_flag="--prerelease" ;;
+          esac
+
+          gh release create "$TAG" \
+            --title "$subject" \
+            --generate-notes \
+            $prerelease_flag
