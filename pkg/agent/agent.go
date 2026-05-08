@@ -14,6 +14,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// Provider names recognised by CreateAgent. Centralised so the
+// requiresAPIKey switch and the createProvider switch agree on
+// the same string set, and so goconst / consumers don't have to
+// chase the literal across two cases.
+const (
+	providerAnthropic  = "anthropic"
+	providerOpenAI     = "openai"
+	providerOpenRouter = "openrouter"
+)
+
 type Config struct {
 	Provider      string
 	ModelName     string
@@ -79,7 +89,7 @@ func CreateAgent(
 
 func requiresAPIKey(provider string) bool {
 	switch provider {
-	case "anthropic", "openai", "openrouter":
+	case providerAnthropic, providerOpenAI, providerOpenRouter:
 		return true
 	default:
 		return false
@@ -88,21 +98,21 @@ func requiresAPIKey(provider string) bool {
 
 func createProvider(name, apiKey, apiBase string) (fantasy.Provider, error) {
 	switch name {
-	case "anthropic":
+	case providerAnthropic:
 		opts := []anthropic.Option{anthropic.WithAPIKey(apiKey)}
 		if apiBase != "" {
 			opts = append(opts, anthropic.WithBaseURL(apiBase))
 		}
 
 		return anthropic.New(opts...)
-	case "openai":
+	case providerOpenAI:
 		opts := []openai.Option{openai.WithAPIKey(apiKey)}
 		if apiBase != "" {
 			opts = append(opts, openai.WithBaseURL(apiBase))
 		}
 
 		return openai.New(opts...)
-	case "openrouter":
+	case providerOpenRouter:
 		return openrouter.New(openrouter.WithAPIKey(apiKey))
 	default:
 		opts := []openaicompat.Option{
