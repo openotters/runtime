@@ -3,7 +3,7 @@ package internal
 import (
 	"context"
 
-	runtimev1 "github.com/openotters/agentfile/agent/api/v1"
+	runtimev1 "github.com/openotters/agentfile/executor/api/v1"
 	"github.com/openotters/runtime/pkg/agent"
 )
 

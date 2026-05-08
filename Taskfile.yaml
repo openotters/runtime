@@ -46,7 +46,9 @@ tasks:
       # alias in TAGS at once. Each push then picks one tag and ships it.
       - >-
         flags=""; for t in {{.TAGS}}; do flags="$flags -t {{.REGISTRY}}/runtime:$t"; done;
-        {{.OTTERS}} bin build -n runtime -d "openotters agent runtime" $flags
+        {{.OTTERS}} bin build -n runtime -d "openotters agent runtime"
+        -s "{{.SOURCE | default "https://github.com/openotters/runtime"}}"
+        $flags
         darwin/arm64:{{.OUT_DIR}}/runtime-darwin-arm64
         darwin/amd64:{{.OUT_DIR}}/runtime-darwin-amd64
         linux/arm64:{{.OUT_DIR}}/runtime-linux-arm64
