@@ -7,19 +7,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"charm.land/fantasy"
 	"go.uber.org/zap"
 )
 
-// Input is what the LLM writes when it calls a BIN tool: a single
-// free-form command string. The runtime shell-splits this into argv
-// and execs the tool binary directly — no JSON envelope, no stdin
-// stuffing, no wrapper per tool. The field stays named "input" so
-// existing LLM tool-call schemas advertised via jsonschema reflection
-// keep working without a tool-call migration.
+// Input is the BIN tool call shape exposed to the LLM. Fantasy reflects
+// this struct into a JSON schema, so the model sees `args` and `stdin`
+// as named fields and picks whichever the tool needs.
+//
+// Both fields are optional. Tools that take only argv use `args` and
+// ignore `stdin`; tools whose meaningful input flows over stdin
+// (`yaegi run -`, `pandoc`, `markitdown`, …) use `stdin` (often
+// alongside a small `args` like `["run", "-"]`). At least one of them
+// is required — empty calls are rejected so the model gets immediate
+// feedback rather than the binary's own help text.
 type Input struct {
-	Input string `json:"input" jsonschema:"description=Command string passed to the tool; shell-split into argv"`
+	Args  []string `json:"args,omitempty"  jsonschema:"description=Positional arguments passed to the binary as argv. Use this for flags, paths, subcommands."`
+	Stdin string   `json:"stdin,omitempty" jsonschema:"description=Content piped to the binary's stdin. Use for tools that read source/data from stdin (e.g. yaegi run -, jq with no input file)."`
 }
 
 type executor struct {
@@ -33,15 +39,27 @@ func newExecutor(binary string, args []string, dir string, logger *zap.Logger) *
 	return &executor{binary: binary, args: args, dir: dir, logger: logger}
 }
 
-// Run execs the tool binary with argv = static config args + the
-// shell-split user input. Stdout becomes the tool response content;
-// stderr + the exit error surface to the LLM as IsError=true.
-func (e *executor) Run(ctx context.Context, input Input, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	argv := append(append([]string{}, e.args...), splitArgs(input.Input)...)
+// Run execs the tool binary with argv = static config args + Input.Args
+// and pipes Input.Stdin to the process. Stdout becomes the tool
+// response content; stderr + the exit error surface to the LLM as
+// IsError=true.
+func (e *executor) Run(ctx context.Context, in Input, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	if len(in.Args) == 0 && in.Stdin == "" {
+		return fantasy.ToolResponse{
+			IsError: true,
+			Content: "tool call is empty: provide args, stdin, or both",
+		}, nil
+	}
+
+	argv := append(append([]string{}, e.args...), in.Args...)
 
 	cmd := exec.CommandContext(ctx, e.binary, argv...) //nolint:gosec // binary is from trusted config
 	cmd.Dir = e.dir
 	cmd.Env = e.env()
+
+	if in.Stdin != "" {
+		cmd.Stdin = strings.NewReader(in.Stdin)
+	}
 
 	var stdout, stderr bytes.Buffer
 
@@ -52,6 +70,7 @@ func (e *executor) Run(ctx context.Context, input Input, _ fantasy.ToolCall) (fa
 		e.logger.Warn("tool execution failed",
 			zap.String("binary", e.binary),
 			zap.Strings("argv", argv),
+			zap.Bool("stdin", in.Stdin != ""),
 			zap.Error(err),
 			zap.String("stderr", stderr.String()),
 		)
