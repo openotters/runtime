@@ -48,7 +48,7 @@ func (p *Prompt) Run(
 		}
 	}
 
-	_, err = setup.svc.ChatStream(ctx, "prompt-debug", p.Message, cb)
+	_, err = setup.svc.ChatStream(ctx, "prompt-debug", p.Message, cb, agent.ChatStreamOptions{})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
