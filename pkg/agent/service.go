@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/openotters/runtime/pkg/memory"
+	"github.com/openotters/runtime/pkg/sessionctx"
 )
 
 type Service struct {
@@ -177,7 +178,11 @@ func (s *Service) ChatStream(
 		},
 	}
 
-	result, err := s.agent.Stream(ctx, call)
+	// Tool callbacks need to know which session they're running
+	// inside — e.g. job_submit auto-stamps io.openotters.session-id
+	// onto submitted jobs. Threading via ctx (not env) because
+	// sessions are per-call and the runtime hosts many concurrently.
+	result, err := s.agent.Stream(sessionctx.With(ctx, sessionID), call)
 	if err != nil {
 		return "", fmt.Errorf("agent stream: %w", err)
 	}

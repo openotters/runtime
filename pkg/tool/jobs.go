@@ -8,7 +8,14 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/openotters/runtime/pkg/jobsclient"
+	"github.com/openotters/runtime/pkg/sessionctx"
 )
+
+// labelSessionID is the standard reserved label for "the chat session
+// this job was originated from." Mirrors the constant the daemon docs
+// in api/v1/daemon.proto. Centralised here so the auto-stamp logic
+// has one place to look.
+const labelSessionID = "io.openotters.session-id"
 
 // SubmitJobInput is the model-facing schema for `job_submit`. The
 // jsonschema tags drive what the model sees in its tool-list prompt
@@ -78,7 +85,21 @@ After submitting, use job_wait(job_id) to block until done, or job_status(job_id
 						Content: "job_submit: bin is required",
 					}, nil
 				}
-				id, err := client.SubmitJob(ctx, in.Bin, in.Args, in.Stdin, in.Labels)
+				// Auto-stamp io.openotters.session-id from the chat
+				// session in scope. Lets operators filter /jobs by
+				// "show me everything from this conversation" with
+				// zero model effort. Model-supplied label wins if it
+				// passes one explicitly — explicit > inferred.
+				labels := in.Labels
+				if sess := sessionctx.From(ctx); sess != "" {
+					if labels == nil {
+						labels = map[string]string{}
+					}
+					if _, has := labels[labelSessionID]; !has {
+						labels[labelSessionID] = sess
+					}
+				}
+				id, err := client.SubmitJob(ctx, in.Bin, in.Args, in.Stdin, labels)
 				if err != nil {
 					return fantasy.ToolResponse{
 						IsError: true,
