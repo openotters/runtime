@@ -41,5 +41,16 @@ func LoadTools(defs []Def, workDir string, logger *zap.Logger) ([]fantasy.AgentT
 		logger.Info("tool loaded", zap.String("name", cfg.Name), zap.String("binary", cfg.Binary))
 	}
 
+	// Daemon-callback tools (job_submit / job_status / job_wait).
+	// Auto-registered when both OTTERSD_URL and OTTERS_AGENT_TOKEN
+	// are present in the spawn env — the agentfile executor plants
+	// them at CreateAgent time. Absence means an old daemon
+	// (pre-JWT) or --no-http; the agent operates with only the
+	// per-BIN sync exec tools above, no error.
+	if jobTools := BuildJobTools(); len(jobTools) > 0 {
+		tools = append(tools, jobTools...)
+		logger.Info("daemon-job tools registered", zap.Int("count", len(jobTools)))
+	}
+
 	return tools, nil
 }

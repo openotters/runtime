@@ -88,7 +88,7 @@ func TestService_ChatStreamRoundTrip(t *testing.T) {
 
 	resp, err := svc.ChatStream(context.Background(), "stream-s", "ping", func(e agent.StreamEvent) {
 		seen = append(seen, e)
-	})
+	}, agent.ChatStreamOptions{})
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestService_ChatStreamPropagatesAgentError(t *testing.T) {
 		nil, newServiceStore(t), nil, zap.NewNop(),
 	)
 
-	_, err := svc.ChatStream(context.Background(), "s", "p", func(_ agent.StreamEvent) {})
+	_, err := svc.ChatStream(context.Background(), "s", "p", func(_ agent.StreamEvent) {}, agent.ChatStreamOptions{})
 	if err == nil || !strings.Contains(err.Error(), "agent stream") {
 		t.Fatalf("err = %v, want 'agent stream' wrapping", err)
 	}
