@@ -57,7 +57,13 @@ func (s *GRPCServer) ChatStream(
 		})
 	}
 
-	response, err := s.svc.ChatStream(stream.Context(), req.GetSessionId(), req.GetPrompt(), cb)
+	response, err := s.svc.ChatStream(
+		stream.Context(),
+		req.GetSessionId(),
+		req.GetPrompt(),
+		cb,
+		agent.ChatStreamOptions{Regenerate: req.GetRegenerate()},
+	)
 	if err != nil {
 		return err
 	}
@@ -109,9 +115,11 @@ func (s *GRPCServer) ListSessionMessages(
 	out := make([]*runtimev1.SessionMessage, len(msgs))
 	for i, m := range msgs {
 		out[i] = &runtimev1.SessionMessage{
-			Role:      m.Role,
-			Content:   m.Content,
-			CreatedAt: m.CreatedAt,
+			Role:         m.Role,
+			Content:      m.Content,
+			CreatedAt:    m.CreatedAt,
+			BranchesJson: m.BranchesJSON,
+			ActiveBranch: m.ActiveBranch,
 		}
 	}
 
