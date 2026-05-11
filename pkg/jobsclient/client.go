@@ -258,6 +258,101 @@ func (c *Client) WatchJob(ctx context.Context, jobID string) (*JobView, error) {
 	return last, nil
 }
 
+// FollowJob is the read-only counterpart of WatchJob: it streams
+// the job's state until terminal but does NOT cancel the underlying
+// job when the caller's context is cancelled. Use it when the caller
+// is an *observer* of work owned by someone else — `job_watch` from
+// the agent's tool set, for instance, where an interrupted agent
+// turn shouldn't yank the BIN it was monitoring.
+//
+// On ctx-cancel the stream Recv returns with ctx.Err and we return
+// (lastSeen, err) — the caller gets whatever snapshot landed
+// before the disconnect. The daemon keeps running the job.
+//
+// Implementation parity with WatchJob is intentional: only the
+// cancel-on-disconnect goroutine is omitted. If WatchJob's stream
+// loop evolves, this method should track it (extract a shared
+// recvLoop helper if it grows).
+func (c *Client) FollowJob(ctx context.Context, jobID string) (*JobView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+
+	stream, err := c.rt.WatchAsyncJob(ctx, &daemonv1.WatchAsyncJobRequest{JobId: jobID})
+	if err != nil {
+		return nil, err
+	}
+
+	var last *JobView
+	for {
+		resp, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			// Parent ctx cancellation lands here as ctx.Err. We
+			// intentionally do NOT call CancelAsyncJob — that's
+			// the load-bearing difference vs. WatchJob — and
+			// return whatever snapshot we already saw alongside
+			// the error so observability callers can render
+			// partial state.
+			return last, recvErr
+		}
+
+		last = jobFromProto(resp.GetJob())
+		if last.IsTerminal() {
+			break
+		}
+	}
+
+	if last == nil {
+		return nil, fmt.Errorf("jobsclient: follow %s: stream closed before any state", jobID)
+	}
+
+	return last, nil
+}
+
+// ListJobsOpts narrows the agent-side list query. AgentID is NOT
+// part of the options: the daemon pins the result set to the JWT's
+// bound agent regardless of what the request carries, so the
+// runtime never has to know or guess its own UUID. Labels filter
+// is AND-merged: every key/value must match.
+type ListJobsOpts struct {
+	Status string
+	Labels map[string]string
+}
+
+// ListJobs returns the agent's async-job snapshots, filtered by
+// status (optional) and label selector (optional). Used by the
+// agent's `job_list` tool to surface "my recent jobs in this
+// session" without the agent having to thread its own UUID through
+// the call. Order is daemon-side (created_at DESC); the caller
+// trims to the desired window.
+func (c *Client) ListJobs(ctx context.Context, opts ListJobsOpts) ([]*JobView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.rt.ListAsyncJobs(ctx, &daemonv1.ListAsyncJobsRequest{
+		// agent_id left empty — the daemon scopes by the JWT's
+		// bound agent and ignores the request field when the token
+		// is agent-scoped (which it always is for the runtime).
+		Status:        opts.Status,
+		LabelSelector: opts.Labels,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := resp.GetJobs()
+	out := make([]*JobView, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, jobFromProto(j))
+	}
+
+	return out, nil
+}
+
 // CancelJob requests immediate cancellation. The job transitions to
 // `cancelled` once the daemon's pool reaps it (~250 ms typical).
 func (c *Client) CancelJob(ctx context.Context, jobID string) error {

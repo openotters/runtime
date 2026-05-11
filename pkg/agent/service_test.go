@@ -39,6 +39,29 @@ func (s *stubAgent) Stream(_ context.Context, _ fantasy.AgentStreamCall) (*fanta
 	return s.Generate(context.Background(), fantasy.AgentCall{})
 }
 
+// streamingCancelAgent fires OnTextDelta callbacks for each of its
+// `deltas`, then returns context.Canceled — modelling the "user
+// hit Stop mid-stream after the model already emitted some tokens"
+// flow. Used by TestService_ChatStreamCancelPersistsPartial to pin
+// the contract that those partial deltas land in the store even
+// though Stream errored.
+type streamingCancelAgent struct {
+	deltas []string
+}
+
+func (a *streamingCancelAgent) Generate(_ context.Context, _ fantasy.AgentCall) (*fantasy.AgentResult, error) {
+	return nil, context.Canceled
+}
+
+func (a *streamingCancelAgent) Stream(_ context.Context, call fantasy.AgentStreamCall) (*fantasy.AgentResult, error) {
+	for _, d := range a.deltas {
+		if call.OnTextDelta != nil {
+			_ = call.OnTextDelta("", d)
+		}
+	}
+	return nil, context.Canceled
+}
+
 func newServiceStore(t *testing.T) *memory.Store {
 	t.Helper()
 
@@ -120,6 +143,35 @@ func TestService_ChatStreamPropagatesAgentError(t *testing.T) {
 	_, err := svc.ChatStream(context.Background(), "s", "p", func(_ agent.StreamEvent) {}, agent.ChatStreamOptions{})
 	if err == nil || !strings.Contains(err.Error(), "agent stream") {
 		t.Fatalf("err = %v, want 'agent stream' wrapping", err)
+	}
+}
+
+// TestService_ChatStreamCancelPersistsPartial pins the cancel-path
+// fix: when the user interrupts a streaming turn, the partial
+// assistant message the model already produced MUST land in the
+// store so a page refresh shows the work-in-flight, not a ghost
+// of the user prompt alone. Regression for the bug where Stream's
+// context.Canceled return triggered an early-exit that discarded
+// the collected parts.
+func TestService_ChatStreamCancelPersistsPartial(t *testing.T) {
+	t.Parallel()
+
+	store := newServiceStore(t)
+	// streamingAgent fires one OnTextDelta callback then errors with
+	// context.Canceled, simulating "user clicked Stop mid-stream
+	// after seeing a few tokens".
+	stub := &streamingCancelAgent{deltas: []string{"partial answer "}}
+	svc := agent.NewService(stub, nil, store, nil, zap.NewNop())
+
+	_, err := svc.ChatStream(context.Background(), "cancel-s", "ping",
+		func(_ agent.StreamEvent) {}, agent.ChatStreamOptions{})
+	if err == nil || !strings.Contains(err.Error(), "agent stream") {
+		t.Fatalf("err = %v, want 'agent stream' wrapping context.Canceled", err)
+	}
+
+	count, _ := store.CountMessages(context.Background(), "cancel-s")
+	if count != 2 {
+		t.Fatalf("expected user+partial-assistant stored after cancel, got %d", count)
 	}
 }
 

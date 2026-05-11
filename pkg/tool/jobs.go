@@ -34,6 +34,19 @@ type JobIDInput struct {
 	JobID string `json:"job_id" jsonschema:"description=Job id returned by job_submit"`
 }
 
+// ListJobsInput controls the agent-side job_list scope. By default
+// only jobs from the current chat session are returned (matching
+// the io.openotters.session-id label that job_submit auto-stamps);
+// flip AllSessions to see everything this agent has submitted across
+// sessions. Status / Limit are additional narrowers. AgentID is
+// never accepted — the daemon scopes by the agent's bound JWT, so
+// the agent can never list another agent's jobs.
+type ListJobsInput struct {
+	AllSessions bool   `json:"all_sessions,omitempty" jsonschema:"description=List jobs across all your sessions. Default false — only this chat session."`
+	Status      string `json:"status,omitempty" jsonschema:"description=Filter by status: pending, running, done, error, cancelled, orphaned. Empty = all."`
+	Limit       int    `json:"limit,omitempty" jsonschema:"description=Maximum number of jobs to return (most recent first). Default 20, max 100."`
+}
+
 // BuildJobTools returns the three async-job tools when a daemon
 // callback path is wired (OTTERSD_URL + OTTERS_AGENT_TOKEN both set
 // in the spawn env). Returns an empty slice when env vars are
@@ -151,6 +164,112 @@ EXAMPLES:
 		),
 
 		fantasy.NewAgentTool(
+			"job_list",
+			`List your recent async jobs. By default scoped to the current chat session — set all_sessions=true to see every job you've submitted regardless of session. Always agent-scoped: you can never see another agent's jobs, the daemon enforces this with the JWT regardless of what's in the request.
+
+USE THIS when the operator asks "what did I just run", "show me my jobs", "is anything still running", or you need to recover a job_id you didn't remember to keep.
+
+DON'T USE THIS to poll a single job — use job_status / job_wait instead, both narrower and cheaper.
+
+EXAMPLES:
+  Default — recent jobs in this session:
+    job_list({})
+    → [{"job_id":"job_abc","status":"running","exit_code":0,"stdout":"","stderr":""}, …]
+
+  All my jobs across all sessions, only the ones still running:
+    job_list({"all_sessions":true,"status":"running"})
+
+  My last 5 jobs (this session):
+    job_list({"limit":5})`,
+			func(ctx context.Context, in ListJobsInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+				opts := jobsclient.ListJobsOpts{Status: in.Status}
+
+				// Default: scope to the current chat session via the
+				// auto-stamped label. AllSessions=true clears the scope
+				// — agent decides whether the broader view is useful.
+				if !in.AllSessions {
+					if sess := sessionctx.From(ctx); sess != "" {
+						opts.Labels = map[string]string{labelSessionID: sess}
+					}
+				}
+
+				jobs, err := client.ListJobs(ctx, opts)
+				if err != nil {
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: fmt.Sprintf("job_list failed: %s", err),
+					}, nil
+				}
+
+				// Apply the agent-side limit AFTER fetch. The daemon
+				// doesn't expose a server-side limit on this RPC yet;
+				// for typical session-scoped queries the result set is
+				// already small, so paginating here is fine. Default
+				// 20 keeps the model's tool-output budget tight.
+				limit := in.Limit
+				if limit <= 0 {
+					limit = 20
+				}
+				if limit > 100 {
+					limit = 100
+				}
+				if len(jobs) > limit {
+					jobs = jobs[:limit]
+				}
+
+				body, mErr := json.Marshal(jobs)
+				if mErr != nil {
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: fmt.Sprintf("encoding jobs: %s", mErr),
+					}, nil
+				}
+
+				return fantasy.ToolResponse{Content: string(body)}, nil
+			},
+		),
+
+		fantasy.NewAgentTool(
+			"job_cancel",
+			`Cancel an in-flight async job. The daemon SIGKILLs the underlying BIN process (0s grace) and transitions the row to status="cancelled" once the executor reaps it (~250 ms typical). Stdout/stderr captured up to the kill point are preserved.
+
+USE THIS when a previously-submitted job is no longer wanted — operator changed their mind, an upstream condition made the work redundant, or the BIN is misbehaving and needs to stop now.
+
+NO-OP behaviour: cancelling a job that is already terminal (done|error|cancelled|orphaned) returns an error from the daemon. That's not a failure of intent — it just means the job already finished. Read the error message; don't retry.
+
+EXAMPLES:
+  Cancel a runaway rollout:
+    job_cancel({"job_id":"job_abc123"})
+    → {"job_id":"job_abc123","cancelled":true}
+
+  Cancel + check the captured output:
+    job_cancel({"job_id":"job_abc"})
+    job_status({"job_id":"job_abc"})
+    → {"job_id":"job_abc","status":"cancelled","exit_code":0,"stdout":"…partial bytes…","stderr":""}
+
+  Already-finished job:
+    job_cancel({"job_id":"job_done"})
+    → tool error: "async job not currently running" — job already terminal, nothing to cancel.`,
+			func(ctx context.Context, in JobIDInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+				if in.JobID == "" {
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: "job_cancel: job_id is required",
+					}, nil
+				}
+				if err := client.CancelJob(ctx, in.JobID); err != nil {
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: fmt.Sprintf("job_cancel failed: %s", err),
+					}, nil
+				}
+				return fantasy.ToolResponse{
+					Content: fmt.Sprintf(`{"job_id":%q,"cancelled":true}`, in.JobID),
+				}, nil
+			},
+		),
+
+		fantasy.NewAgentTool(
 			"job_wait",
 			`Block until a job reaches a terminal status (done|error|cancelled|orphaned), then return its final state — stdout, stderr, exit_code, and any error. Efficient: no busy-loop, no extra turns burned.
 
@@ -184,6 +303,52 @@ EXAMPLES:
 					}, nil
 				}
 				return jobViewResponse(view), nil
+			},
+		),
+
+		fantasy.NewAgentTool(
+			"job_watch",
+			`Watch a job until it reaches terminal status and return ONLY its stdout — no exit code, no stderr, no status framing. Treats the job like a pipe you're tailing.
+
+DIFFERENCE FROM job_wait — this is the load-bearing one:
+- job_wait → blocks for the full state on completion; if YOUR turn is interrupted, the daemon cancels the underlying job (so you don't strand work you no longer want).
+- job_watch → blocks for the stdout on completion; if YOUR turn is interrupted, the job KEEPS RUNNING on the daemon — you just stop observing. Pick this when you're following work that's not yours to kill, or when you want the model to be able to detach cheaply.
+
+USE THIS when you only care about the BIN's stdout — feeding it to another tool, returning it as the final answer, summarising it. You lose visibility on exit_code / stderr / error, so call job_status afterward if you need framing.
+
+DON'T USE THIS when you need the exit code to branch on success/failure — call job_wait, which surfaces that.
+
+EXAMPLES:
+  Get just the rolled-out manifest:
+    job_watch({"job_id":"job_abc"})
+    → "successfully rolled out\nrevision 12 ready\n"
+
+  Already-finished job — same shape, returns its captured stdout:
+    job_watch({"job_id":"job_done"})
+    → "final output line\n"`,
+			func(ctx context.Context, in JobIDInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+				if in.JobID == "" {
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: "job_watch: job_id is required",
+					}, nil
+				}
+				view, err := client.FollowJob(ctx, in.JobID)
+				if err != nil {
+					// Partial snapshot may be non-nil if we got
+					// SOME state before the error. Surface what we
+					// have alongside an IsError so the model can
+					// reason about an interrupted observation.
+					content := fmt.Sprintf("job_watch failed: %s", err)
+					if view != nil {
+						content = view.Stdout + "\n\n[job_watch interrupted: " + err.Error() + "]"
+					}
+					return fantasy.ToolResponse{
+						IsError: true,
+						Content: content,
+					}, nil
+				}
+				return fantasy.ToolResponse{Content: view.Stdout}, nil
 			},
 		),
 	}

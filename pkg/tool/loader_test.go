@@ -20,7 +20,12 @@ func TestLoadTools_DescriptionAppendsDocBody(t *testing.T) {
 	}
 
 	defs := []tool.Def{
-		{Name: "jq", Description: "JSON tool", Binary: "/usr/bin/jq", Doc: docPath},
+		{
+			Name:        "jq",
+			Description: "JSON tool",
+			Binary:      "/usr/bin/jq",
+			Docs:        tool.Docs{Usage: docPath},
+		},
 		{Name: "ls", Description: "list", Binary: "/bin/ls"},
 	}
 
@@ -40,7 +45,7 @@ func TestLoadTools_MissingDocIsTolerated(t *testing.T) {
 	tools, err := tool.LoadTools([]tool.Def{{
 		Name:   "x",
 		Binary: "/bin/true",
-		Doc:    "/no/such/path/USAGE.md",
+		Docs:   tool.Docs{Usage: "/no/such/path/USAGE.md"},
 	}}, "/", zap.NewNop())
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)

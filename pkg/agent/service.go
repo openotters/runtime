@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/schema"
@@ -87,13 +88,13 @@ type StreamCallback func(event StreamEvent)
 // callbacks. Stored as an array of StoredPart inside the messages
 // row's `content` column for assistant turns.
 type StoredPart struct {
-	Kind    string `json:"kind"`              // "text" | "tool"
-	Text    string `json:"text,omitempty"`    // kind=text
-	ToolID  string `json:"tool_id,omitempty"` // kind=tool, runtime-issued id
-	Name    string `json:"name,omitempty"`    // kind=tool
-	Input   string `json:"input,omitempty"`   // kind=tool, raw JSON the model produced
-	Output  string `json:"output,omitempty"`  // kind=tool
-	State   string `json:"state,omitempty"`   // "input-available" | "output-available"
+	Kind   string `json:"kind"`              // "text" | "tool"
+	Text   string `json:"text,omitempty"`    // kind=text
+	ToolID string `json:"tool_id,omitempty"` // kind=tool, runtime-issued id
+	Name   string `json:"name,omitempty"`    // kind=tool
+	Input  string `json:"input,omitempty"`   // kind=tool, raw JSON the model produced
+	Output string `json:"output,omitempty"`  // kind=tool
+	State  string `json:"state,omitempty"`   // "input-available" | "output-available"
 }
 
 // ChatStream runs one streamed turn against the configured model
@@ -182,13 +183,41 @@ func (s *Service) ChatStream(
 	// inside — e.g. job_submit auto-stamps io.openotters.session-id
 	// onto submitted jobs. Threading via ctx (not env) because
 	// sessions are per-call and the runtime hosts many concurrently.
-	result, err := s.agent.Stream(sessionctx.With(ctx, sessionID), call)
-	if err != nil {
-		return "", fmt.Errorf("agent stream: %w", err)
+	result, streamErr := s.agent.Stream(sessionctx.With(ctx, sessionID), call)
+
+	// Persist whatever the OnTextDelta / OnToolCall / OnToolResult
+	// callbacks accumulated, regardless of how Stream returned.
+	// Critical for the cancel path: when the user clicks Stop or
+	// disconnects, ctx is cancelled, Stream errors with
+	// context.Canceled, and without this the partial assistant turn
+	// (the text + any in-flight tool calls the model produced before
+	// the interrupt) would be discarded — the next page refresh
+	// would show only the user prompt, "ghosting" the work the model
+	// already did. Persistence is best-effort; if it fails we log
+	// and still surface the stream error (or success) below.
+	//
+	// Save unconditionally on success (parts may legitimately be
+	// empty for stub-driven tests / no-output turns); on stream
+	// error skip the save when parts is empty to avoid inserting a
+	// blank assistant row for a turn the model never started.
+	//
+	// Use a detached context so a cancelled parent ctx (the common
+	// reason we're in this branch) doesn't immediately kill the
+	// SQLite write too.
+	shouldPersist := streamErr == nil || len(parts) > 0
+	if shouldPersist {
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), persistTimeout)
+		if persistErr := s.persistAssistantTurn(persistCtx, sessionID, parts, opts.Regenerate); persistErr != nil {
+			s.logger.Warn("failed to persist assistant turn", zap.Error(persistErr))
+		}
+		persistCancel()
 	}
 
-	if persistErr := s.persistAssistantTurn(ctx, sessionID, parts, opts.Regenerate); persistErr != nil {
-		s.logger.Warn("failed to persist assistant turn", zap.Error(persistErr))
+	if streamErr != nil {
+		// Compaction is a steady-state housekeeping pass; skip it on
+		// interrupted turns so we don't compound the user's cancel
+		// with extra latency / a possible second error path.
+		return "", fmt.Errorf("agent stream: %w", streamErr)
 	}
 
 	s.compact(ctx, sessionID)
@@ -203,6 +232,12 @@ func (s *Service) ChatStream(
 
 	return response, nil
 }
+
+// persistTimeout bounds the detached Save we do after a cancelled
+// (or otherwise errored) stream. 2s is comfortably above SQLite's
+// per-write latency on local disk and short enough that a hung DB
+// doesn't cascade into a perceptible cancel delay.
+const persistTimeout = 2 * time.Second
 
 // ChatStreamOptions modulates a ChatStream invocation.
 type ChatStreamOptions struct {

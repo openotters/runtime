@@ -23,6 +23,17 @@ type ToolConfig struct {
 	Description string   `json:"description" yaml:"description"`
 	Binary      string   `json:"binary" yaml:"binary"`
 	Args        []string `json:"args,omitempty" yaml:"args,omitempty"`
+	Docs        ToolDocs `json:"docs,omitempty" yaml:"docs,omitempty"`
+}
+
+// ToolDocs are documentation artefacts the executor materialised
+// alongside the BIN binary (sourced from the image's
+// vnd.openotters.bin.* annotations). Each field is a path the loader
+// reads when assembling the model-facing tool description: relative
+// paths resolve against the agent's root, absolute paths are used
+// verbatim. Empty fields mean "BIN ships no doc of that kind."
+type ToolDocs struct {
+	Usage string `json:"usage,omitempty" yaml:"usage,omitempty"`
 }
 
 type NeighborConfig struct {
@@ -192,6 +203,7 @@ func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error)
 		defs[i] = tool.Def{
 			Name: t.Name, Description: t.Description,
 			Binary: binary, Args: t.Args,
+			Docs: tool.Docs{Usage: c.resolveDocPath(t.Docs.Usage)},
 		}
 	}
 
@@ -210,6 +222,20 @@ func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error)
 	return tools, nil
 }
 
+// resolveDocPath rewrites a doc path the executor stamped into
+// agent.yaml so the loader can open it. Relative paths join against
+// the agent root (system executor's convention — same shape as
+// Binary); absolute paths are used verbatim (docker executor's
+// convention for image-mount paths). Empty in → empty out so the
+// loader skips silently.
+func (c *AgentConfig) resolveDocPath(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+
+	return filepath.Join(c.Root, path)
+}
+
 func parseModel(model string) (string, string) {
 	if idx := strings.Index(model, "/"); idx > 0 {
 		return model[:idx], model[idx+1:]
@@ -226,6 +252,9 @@ type agentYAML struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
 		Binary      string `yaml:"binary"`
+		Docs        struct {
+			Usage string `yaml:"usage"`
+		} `yaml:"docs,omitempty"`
 	} `yaml:"tools,omitempty"`
 }
 
@@ -264,6 +293,7 @@ func (c *AgentConfig) loadAgentConfig(logger *zap.Logger) {
 				Name:        t.Name,
 				Description: t.Description,
 				Binary:      binary,
+				Docs:        ToolDocs{Usage: t.Docs.Usage},
 			})
 		}
 	}

@@ -340,11 +340,8 @@ github.com/kisielk/errcheck v1.10.0 h1:Lvs/YAHP24YKg08LA8oDw2z9fJVme090RAXd90S+r
 github.com/kisielk/errcheck v1.10.0/go.mod h1:kQxWMMVZgIkDq7U8xtG/n2juOjbLgZtedi0D+/VL/i8=
 github.com/kkHAIKE/contextcheck v1.1.6 h1:7HIyRcnyzxL9Lz06NGhiKvenXq7Zw6Q0UQu/ttjfJCE=
 github.com/kkHAIKE/contextcheck v1.1.6/go.mod h1:3dDbMRNBFaq8HFXWC1JyvDSPm43CmE6IuHam8Wr0rkg=
-github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
-github.com/kr/pty v1.1.1/go.mod h1:pFQYn66WHrOpPYNljwOMqo10TkYh1fy3cYio2l3bCsQ=
-github.com/kr/text v0.1.0/go.mod h1:4Jbv+DJW3UT/LiOwJeYQe1efqtUx/iVham/4vfdArNI=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/kulti/thelper v0.7.1 h1:fI8QITAoFVLx+y+vSyuLBP+rcVIB8jKooNSCT2EiI98=
@@ -390,8 +387,6 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-runewidth v0.0.23 h1:7ykA0T0jkPpzSvMS5i9uoNn2Xy3R383f9HDx3RybWcw=
 github.com/mattn/go-runewidth v0.0.23/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
-github.com/merlindorin/go-shared v0.0.0-20260401200857-a37e8564e29e h1:5XtcoaFVwZr/XH9EzMsocVz0AD8BQXDL1CFXc+UEpl8=
-github.com/merlindorin/go-shared v0.0.0-20260401200857-a37e8564e29e/go.mod h1:NtPWtXlTjFQrRnwLSiMZdaOArrbgVmoVeYn9V8G1eSY=
 github.com/merlindorin/go-shared v0.0.0-20260508231238-d98333880098 h1:FI8Rr6DAiJ0K1WUx71P3kwPPO2PLC4vjaukN4VeTRFY=
 github.com/merlindorin/go-shared v0.0.0-20260508231238-d98333880098/go.mod h1:NtPWtXlTjFQrRnwLSiMZdaOArrbgVmoVeYn9V8G1eSY=
 github.com/mgechev/revive v1.15.0 h1:vJ0HzSBzfNyPbHKolgiFjHxLek9KUijhqh42yGoqZ8Q=
@@ -419,12 +414,8 @@ github.com/onsi/ginkgo/v2 v2.28.1 h1:S4hj+HbZp40fNKuLUQOYLDgZLwNUVn19N3Atb98NCyI
 github.com/onsi/ginkgo/v2 v2.28.1/go.mod h1:CLtbVInNckU3/+gC8LzkGUb9oF+e8W8TdUsxPwvdOgE=
 github.com/onsi/gomega v1.39.1 h1:1IJLAad4zjPn2PsnhH70V4DKRFlrCzGBNrNaru+Vf28=
 github.com/onsi/gomega v1.39.1/go.mod h1:hL6yVALoTOxeWudERyfppUcZXjMwIMLnuSfruD2lcfg=
-github.com/openotters/agentfile v1.0.0-alpha.9 h1:UWlE6OPsLxLHR1eV7OemVmqpKhnmjH8cOaG6Ak/C0oI=
-github.com/openotters/agentfile v1.0.0-alpha.9/go.mod h1:4AZClO7jTxsbNgmFkPuSNlZVf6nSKgdBZ+uWpmYMCLg=
-github.com/openotters/agentfile v1.0.0-alpha.27 h1:qaqjm7m/nLmGILn2aEVUJCU1HxLwkZG67n/cM3Qaeoo=
-github.com/openotters/agentfile v1.0.0-alpha.27/go.mod h1:e+M+ZukgHT4pR+kJHleu2BCudDo+tcYdUFh1ktuTzkc=
-github.com/openotters/openotters v1.0.0-alpha.43 h1:t6ITppvKERtgCTjQs9OpazxHjdgkniIyNJ8I1QMazzI=
-github.com/openotters/openotters v1.0.0-alpha.43/go.mod h1:6/1REvneqxwWb3OaLhKPdE2arakFzwsI+OIX5eJ0h1c=
+github.com/openotters/agentfile v1.0.0-alpha.28 h1:CHL89KT0xBW403Nmbr7sp38bcZLeDyST+GuGyczZozA=
+github.com/openotters/agentfile v1.0.0-alpha.28/go.mod h1:e+M+ZukgHT4pR+kJHleu2BCudDo+tcYdUFh1ktuTzkc=
 github.com/openotters/openotters v1.0.0-alpha.44 h1:2MYgOI3Di7GVZT6WV3RMO5yjcTu4S9XJpIvTMNJO9IE=
 github.com/openotters/openotters v1.0.0-alpha.44/go.mod h1:6/1REvneqxwWb3OaLhKPdE2arakFzwsI+OIX5eJ0h1c=
 github.com/otiai10/copy v1.2.0/go.mod h1:rrF5dJ5F0t/EWSYODDu4j9/vEeYHMkc8jt0zJChqQWw=
@@ -735,7 +726,6 @@ google.golang.org/grpc v1.80.0/go.mod h1:ho/dLnxwi3EDJA4Zghp7k2Ec1+c2jqup0bFkw07
 google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
 google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
-gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
 gopkg.in/yaml.v2 v2.2.2/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=

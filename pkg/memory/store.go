@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"charm.land/fantasy"
@@ -22,22 +21,118 @@ type Store struct {
 // the runtime will re-emit fresh tool calls if needed for the next
 // turn. Best-effort: if content isn't JSON, returns it verbatim
 // (back-compat hatch for any rows that escape the migration).
-func flattenAssistantParts(content string) string {
-	type part struct {
-		Kind string `json:"kind"`
-		Text string `json:"text"`
+// storedAssistantPart mirrors the JSON shape the agent service
+// writes for assistant turns (see runtime/pkg/agent/service.go
+// StoredPart). Re-declared here so the memory package doesn't
+// depend on agent. Fields are a superset of what the dashboard
+// uses — keep tags in sync if that struct changes.
+type storedAssistantPart struct {
+	Kind   string `json:"kind"`
+	Text   string `json:"text"`
+	ToolID string `json:"tool_id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+	Output string `json:"output"`
+	State  string `json:"state"`
+}
+
+// expandAssistantParts decodes one stored assistant-row's content
+// into the fantasy.Message sequence the LLM should see on replay.
+// A single stored assistant turn often spans multiple model "steps":
+// text → tool_use → tool_result → text → tool_use → tool_result → text.
+// Each step boundary must become a fresh assistant message in the
+// replay, because Anthropic's API rejects an assistant message
+// where a tool_use is followed by more content in the same message
+// ("tool_use ids were found without tool_result blocks immediately
+// after"). The canonical shape Anthropic / OpenAI expects is:
+//
+//	assistant: [TextPart, ToolCallPart…]      (step 1, ends at tool_use)
+//	tool:      [ToolResultPart…]              (step 1 results)
+//	assistant: [TextPart, ToolCallPart…]      (step 2, optional)
+//	tool:      [ToolResultPart…]              (step 2 results)
+//	assistant: [TextPart]                     (final step, no more tools)
+//
+// We detect step boundaries by walking the stored parts and
+// splitting on `text-after-tool`: once a tool part lands in the
+// current step, the next text part flushes the step and starts a
+// new one. Multiple consecutive tool parts in one step are fine —
+// the model issued them in parallel.
+//
+// Empty / non-JSON content falls back to a single TextPart on the
+// assistant message, preserving pre-parts rows.
+func expandAssistantParts(content string) []fantasy.Message {
+	var parts []storedAssistantPart
+	if err := json.Unmarshal([]byte(content), &parts); err != nil || len(parts) == 0 {
+		// Pre-parts row or non-JSON content: surface as plain text.
+		return []fantasy.Message{{
+			Role:    fantasy.MessageRoleAssistant,
+			Content: []fantasy.MessagePart{fantasy.TextPart{Text: content}},
+		}}
 	}
-	var parts []part
-	if err := json.Unmarshal([]byte(content), &parts); err != nil {
-		return content
+
+	var out []fantasy.Message
+
+	assistant := fantasy.Message{Role: fantasy.MessageRoleAssistant}
+	tool := fantasy.Message{Role: fantasy.MessageRoleTool}
+	sawToolInStep := false
+
+	flushStep := func() {
+		if len(assistant.Content) > 0 {
+			out = append(out, assistant)
+		}
+		if len(tool.Content) > 0 {
+			out = append(out, tool)
+		}
+		assistant = fantasy.Message{Role: fantasy.MessageRoleAssistant}
+		tool = fantasy.Message{Role: fantasy.MessageRoleTool}
+		sawToolInStep = false
 	}
-	var out []string
+
 	for _, p := range parts {
-		if p.Kind == "text" && p.Text != "" {
-			out = append(out, p.Text)
+		switch p.Kind {
+		case "text":
+			if p.Text == "" {
+				continue
+			}
+
+			// Text after a tool in this step belongs to a new
+			// model step — flush the current step's assistant +
+			// tool messages and start fresh.
+			if sawToolInStep {
+				flushStep()
+			}
+
+			assistant.Content = append(assistant.Content, fantasy.TextPart{Text: p.Text})
+		case "tool":
+			assistant.Content = append(assistant.Content, fantasy.ToolCallPart{
+				ToolCallID: p.ToolID,
+				ToolName:   p.Name,
+				Input:      p.Input,
+			})
+
+			// Pair every ToolCallPart with a ToolResultPart so the
+			// model sees a complete call/result graph. Interrupted
+			// calls (no output captured) get a synthetic
+			// "(interrupted)" result rather than being dropped —
+			// some providers (Anthropic) reject conversations
+			// where a tool_use has no matching tool_result and the
+			// turn would fail to resume.
+			outputText := p.Output
+			if p.State != "output-available" || outputText == "" {
+				outputText = "(tool call was interrupted before a result was captured)"
+			}
+
+			tool.Content = append(tool.Content, fantasy.ToolResultPart{
+				ToolCallID: p.ToolID,
+				Output:     fantasy.ToolResultOutputContentText{Text: outputText},
+			})
+			sawToolInStep = true
 		}
 	}
-	return strings.Join(out, "")
+
+	flushStep()
+
+	return out
 }
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -97,12 +192,18 @@ func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]fantasy.Me
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 
-		// Assistant content is now JSON-encoded parts. Flatten to
-		// concatenated text for the LLM context — the model only
-		// needs to see what it said, not how the dashboard renders
-		// the parts.
+		// Assistant rows carry JSON-encoded parts (text + tool calls).
+		// Expand into the proper assistant/tool message sequence the
+		// LLM expects so the model can see its own prior tool history
+		// — e.g. which job_id job_submit returned last turn. A single
+		// stored row may produce MULTIPLE messages: one assistant +
+		// tool pair per step boundary, plus a trailing assistant for
+		// any final text. Other roles (user / system) are plain text
+		// and pass through.
 		if role == "assistant" {
-			content = flattenAssistantParts(content)
+			messages = append(messages, expandAssistantParts(content)...)
+
+			continue
 		}
 
 		messages = append(messages, fantasy.Message{
