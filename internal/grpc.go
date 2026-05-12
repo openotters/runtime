@@ -136,6 +136,25 @@ func (s *GRPCServer) Health(
 	}, nil
 }
 
+// Ready is the daemon supervisor's readiness probe. The daemon hits
+// this in a backoff loop after spawning the runtime subprocess; the
+// first successful response flips the agent from Starting → Ready.
+//
+// Two layers of "ready" stack here:
+//   - Reachability: until the gRPC listener has bound and accepted
+//     the dial, the daemon's probe gets Unavailable / connection-
+//     refused and retries. So just answering this RPC at all already
+//     means "process up, gRPC alive, accepting traffic."
+//   - Service: svc != nil means the agent.Service was constructed —
+//     i.e. the model client is loaded, context files are read, the
+//     session store is open. The current runtime startup
+//     (serve.go) guarantees this before NewGRPCServer is called, so
+//     in practice this is always true once the server is up.
+//
+// Returning {Ready: false} is reserved for a future world where the
+// server starts before svc finishes loading (e.g. lazy model init).
+// We keep the field so the daemon can keep probing without a wire
+// change when that lands.
 func (s *GRPCServer) Ready(
 	_ context.Context, _ *runtimev1.ReadyRequest,
 ) (*runtimev1.ReadyResponse, error) {
