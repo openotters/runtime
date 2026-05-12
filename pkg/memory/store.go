@@ -144,34 +144,86 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
-	// Alpha policy: schema changed shape (rich parts + branches) so
-	// any pre-existing rows are dropped on first boot. The previous
-	// flat (role,content) table is no longer compatible with the
-	// branches_json / active_branch columns the agent service now
-	// reads/writes.
-	_, err := db.ExecContext(ctx, `
-		DROP TABLE IF EXISTS messages;
-		CREATE TABLE messages (
+	// Schema-version-free migrations: every step is idempotent and
+	// safe to re-run on every startup. The runtime restarts on every
+	// daemon boot + every agent restart, so the migration MUST NOT
+	// be destructive — that's how we used to lose chat history on
+	// `brew upgrade otters`.
+	stmts := []string{
+		// Base table — created on first boot, untouched thereafter.
+		`CREATE TABLE IF NOT EXISTS messages (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id    TEXT NOT NULL,
 			role          TEXT NOT NULL,
-			-- For user turns this is the prompt text verbatim.
-			-- For assistant turns this is a JSON-encoded array of
-			-- "parts" (text + tool blocks). When branches is
-			-- non-empty, this is the active branch's parts.
 			content       TEXT NOT NULL,
-			-- Assistant-only side channel: JSON-encoded array of
-			-- alternative parts arrays produced by Regenerate. The
-			-- active_branch index points at whichever one (or this
-			-- row's content) is current.
-			branches_json TEXT NOT NULL DEFAULT '[]',
-			active_branch INTEGER NOT NULL DEFAULT 0,
 			created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX idx_messages_session ON messages(session_id, created_at);
-	`)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("messages base schema: %w", err)
+		}
+	}
 
-	return err
+	// branches_json / active_branch — the rich-parts schema. Added
+	// via addColumnIfMissing so existing rows keep working and
+	// re-running migrations stays a no-op.
+	//
+	// content semantics after this migration:
+	//   - User turns: prompt text verbatim.
+	//   - Assistant turns: JSON-encoded array of "parts" (text +
+	//     tool blocks). When branches_json is non-empty, content
+	//     holds the active branch's parts.
+	if err := addColumnIfMissing(ctx, db, "messages", "branches_json",
+		"TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(ctx, db, "messages", "active_branch",
+		"INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// addColumnIfMissing is a small helper for schema migrations that
+// only add columns. It's idempotent: re-running it on a table that
+// already has the column is a no-op.
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, decl string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("table_info %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows table_info: %w", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl),
+	); err != nil {
+		return fmt.Errorf("adding %s.%s: %w", table, column, err)
+	}
+
+	return nil
 }
 
 func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]fantasy.Message, error) {
