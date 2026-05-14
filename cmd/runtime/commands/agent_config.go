@@ -14,7 +14,6 @@ import (
 
 	"github.com/openotters/runtime/pkg/agent"
 	"github.com/openotters/runtime/pkg/memory"
-	"github.com/openotters/runtime/pkg/neighbor"
 	"github.com/openotters/runtime/pkg/tool"
 )
 
@@ -36,13 +35,6 @@ type ToolDocs struct {
 	Usage string `json:"usage,omitempty" yaml:"usage,omitempty"`
 }
 
-type NeighborConfig struct {
-	Name  string `json:"name" yaml:"name"`
-	URL   string `json:"url" yaml:"url"`
-	WSUrl string `json:"ws_url,omitempty" yaml:"ws_url,omitempty"`
-	Token string `json:"token,omitempty" yaml:"token,omitempty"`
-}
-
 type MemoryServeConfig struct {
 	Strategy    string `json:"strategy,omitempty" yaml:"strategy,omitempty" help:"Compaction strategy (sliding or summarize)" default:"summarize"`
 	MaxMessages int    `json:"max_messages,omitempty" yaml:"max_messages,omitempty" help:"Max messages before compaction" default:"20"`
@@ -61,9 +53,8 @@ type AgentConfig struct {
 	APIBase string `help:"Custom API base URL for the provider" optional:""`
 	Addr    string `help:"gRPC listen address" default:":8080"`
 
-	Tools     []ToolConfig      `help:"Tool configurations" yaml:"tools,omitempty" json:"tools,omitempty"`
-	Neighbors []NeighborConfig  `help:"Neighbor agent configurations" yaml:"neighbors,omitempty" json:"neighbors,omitempty"`
-	Memory    MemoryServeConfig `embed:"" prefix:"memory-"`
+	Tools  []ToolConfig      `help:"Tool configurations" yaml:"tools,omitempty" json:"tools,omitempty"`
+	Memory MemoryServeConfig `embed:"" prefix:"memory-"`
 }
 
 func (c *AgentConfig) contextDir() string   { return filepath.Join(c.Root, "etc", "context") }
@@ -207,19 +198,7 @@ func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error)
 		}
 	}
 
-	tools, err := tool.LoadTools(defs, c.Root, logger)
-	if err != nil {
-		return nil, err
-	}
-
-	neighborCfgs := make([]neighbor.Config, len(c.Neighbors))
-	for i, n := range c.Neighbors {
-		neighborCfgs[i] = neighbor.Config{Name: n.Name, URL: n.URL, Token: n.Token}
-	}
-
-	tools = append(tools, neighbor.BuildNeighborTools(neighborCfgs, logger)...)
-
-	return tools, nil
+	return tool.LoadTools(defs, c.Root, logger)
 }
 
 // resolveDocPath rewrites a doc path the executor stamped into

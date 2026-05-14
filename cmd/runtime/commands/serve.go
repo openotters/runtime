@@ -41,7 +41,6 @@ func (s *Serve) Run(
 
 	logger.Info("agent configured",
 		zap.Int("tools", setup.toolCount),
-		zap.Int("neighbors", len(s.Neighbors)),
 	)
 
 	srv := grpc.NewServer()
