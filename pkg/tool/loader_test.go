@@ -34,8 +34,12 @@ func TestLoadTools_DescriptionAppendsDocBody(t *testing.T) {
 		t.Fatalf("LoadTools: %v", err)
 	}
 
-	if len(tools) != 2 {
-		t.Fatalf("len(tools) = %d, want 2", len(tools))
+	// 2 BIN tools + 4 introspection tools (context_list,
+	// context_show, env_list, mount_list — always registered).
+	// job_* tools aren't registered here because the env vars
+	// OTTERSD_URL / OTTERS_AGENT_TOKEN aren't set in this test.
+	if got, want := len(tools), 2+introspectionToolCount; got != want {
+		t.Fatalf("len(tools) = %d, want %d", got, want)
 	}
 }
 
@@ -51,7 +55,14 @@ func TestLoadTools_MissingDocIsTolerated(t *testing.T) {
 		t.Fatalf("LoadTools: %v", err)
 	}
 
-	if len(tools) != 1 {
-		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	// 1 BIN tool + the introspection tools.
+	if got, want := len(tools), 1+introspectionToolCount; got != want {
+		t.Fatalf("len(tools) = %d, want %d", got, want)
 	}
 }
+
+// introspectionToolCount is the size of BuildIntrospectionTools'
+// return. Pinned here so the test breaks loudly if the introspection
+// tool surface ever expands or shrinks — a silent count drift would
+// mask a real LLM-visible change.
+const introspectionToolCount = 4

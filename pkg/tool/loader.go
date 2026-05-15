@@ -66,6 +66,14 @@ func LoadTools(defs []Def, workDir string, logger *zap.Logger) ([]fantasy.AgentT
 		logger.Info("daemon-job tools registered", zap.Int("count", len(jobTools)))
 	}
 
+	// Introspection tools (context_list, context_show, env_list,
+	// mount_list). Always registered — they read from
+	// /etc/agent.yaml so no daemon callback is required. workDir is
+	// the agent root for the system executor or `/` for docker.
+	introspect := BuildIntrospectionTools(workDir)
+	tools = append(tools, introspect...)
+	logger.Info("introspection tools registered", zap.Int("count", len(introspect)))
+
 	return tools, nil
 }
 

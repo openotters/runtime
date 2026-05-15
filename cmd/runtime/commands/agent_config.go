@@ -228,8 +228,17 @@ type agentYAML struct {
 	Name    string            `yaml:"name"`
 	Model   string            `yaml:"model"`
 	Configs map[string]string `yaml:"configs,omitempty"`
-	Context []string          `yaml:"context,omitempty"`
-	Tools   []struct {
+	// Context is the daemon-supplied list of context files to load,
+	// each with a short name (for context_show), an absolute path,
+	// and a one-line description. The runtime reads File to load
+	// the markdown into the system prompt; the introspect tools
+	// surface Name + Description.
+	Context []struct {
+		Name        string `yaml:"name"`
+		File        string `yaml:"file"`
+		Description string `yaml:"description,omitempty"`
+	} `yaml:"context,omitempty"`
+	Tools []struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
 		Binary      string `yaml:"binary"`
@@ -286,7 +295,9 @@ func (c *AgentConfig) loadAgentConfig(logger *zap.Logger) {
 	}
 
 	if len(c.Context) == 0 && len(cfg.Context) > 0 {
-		c.Context = append(c.Context, cfg.Context...)
+		for _, e := range cfg.Context {
+			c.Context = append(c.Context, e.File)
+		}
 	}
 
 	logger.Info("loaded agent config", zap.String("path", path))
