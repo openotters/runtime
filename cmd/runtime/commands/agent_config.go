@@ -46,11 +46,11 @@ type MemoryServeConfig struct {
 // runtime parses them into typed fields below. Defaults live in
 // applyConfigDefaults; configs entries override.
 const (
-	defaultMaxTokens          = 4096
-	defaultMaxIterations      = 20
-	defaultMemoryStrategy     = "summarize"
-	defaultMemoryMaxMessages  = 20
-	defaultMemoryMaxTokens    = 0
+	defaultMaxTokens         = 4096
+	defaultMaxIterations     = 20
+	defaultMemoryStrategy    = "summarize"
+	defaultMemoryMaxMessages = 20
+	defaultMemoryMaxTokens   = 0
 )
 
 type AgentConfig struct {
@@ -73,10 +73,20 @@ type AgentConfig struct {
 	MaxIterations int               `kong:"-"`
 	Memory        MemoryServeConfig `kong:"-"`
 
+	// Provider sampling knobs. Pointer types so "unset" stays
+	// distinguishable from a deliberately-zero value (temperature: 0
+	// means deterministic, not "use the default"). Forwarded to
+	// fantasy only when non-nil.
+	Temperature      *float64 `kong:"-"`
+	TopP             *float64 `kong:"-"`
+	TopK             *int64   `kong:"-"`
+	PresencePenalty  *float64 `kong:"-"`
+	FrequencyPenalty *float64 `kong:"-"`
+
 	// Persisted-config inputs from agent.yaml: tools list and the
 	// ordered context files. Also never CLI flags.
-	Tools   []ToolConfig `kong:"-" yaml:"tools,omitempty" json:"tools,omitempty"`
-	Context []string     `kong:"-" yaml:"context,omitempty" json:"context,omitempty"`
+	Tools   []ToolConfig        `kong:"-" yaml:"tools,omitempty" json:"tools,omitempty"`
+	Context []agent.ContextFile `kong:"-" yaml:"context,omitempty" json:"context,omitempty"`
 }
 
 func (c *AgentConfig) contextDir() string   { return filepath.Join(c.Root, "etc", "context") }
@@ -109,13 +119,21 @@ func (c *AgentConfig) setup(
 
 	// Context files come from agent.yaml's `context:` list. The
 	// runtime no longer scans etc/context/ — the daemon declares
-	// exactly which files load and in what order. Paths are
-	// absolute from the agent root; BuildSystemPrompt joins them
-	// against c.Root.
+	// exactly which files load and in what order. Each entry carries
+	// its display name (used as the section header in the system
+	// prompt) and an absolute path resolved against c.Root.
 	systemPrompt, err := agent.BuildSystemPrompt(c.Root, c.Context)
 	if err != nil {
 		return nil, err
 	}
+
+	// Surface the assembled prompt size so a silent context-load
+	// regression (missing files, wrong root, empty agent.yaml) is
+	// visible at startup instead of only via "the agent feels off".
+	logger.Info("system prompt built",
+		zap.Int("files", len(c.Context)),
+		zap.Int("bytes", len(systemPrompt)),
+	)
 
 	tools, err := c.loadTools(logger)
 	if err != nil {
@@ -133,6 +151,8 @@ func (c *AgentConfig) setup(
 		Provider: provider, ModelName: modelName,
 		APIKey: c.APIKey, APIBase: c.APIBase,
 		MaxTokens: c.MaxTokens, MaxIterations: c.MaxIterations,
+		Temperature: c.Temperature, TopP: c.TopP, TopK: c.TopK,
+		PresencePenalty: c.PresencePenalty, FrequencyPenalty: c.FrequencyPenalty,
 	}, systemPrompt, tools, logger)
 	if err != nil {
 		return nil, err
@@ -296,7 +316,7 @@ func (c *AgentConfig) loadAgentConfig(logger *zap.Logger) {
 
 	if len(c.Context) == 0 && len(cfg.Context) > 0 {
 		for _, e := range cfg.Context {
-			c.Context = append(c.Context, e.File)
+			c.Context = append(c.Context, agent.ContextFile{Name: e.Name, Path: e.File})
 		}
 	}
 
@@ -317,6 +337,21 @@ func (c *AgentConfig) applyConfigDefaults() {
 // directives produce (and that the daemon stamps into agent.yaml).
 // Unknown keys are logged at debug level so a typo in the Agentfile
 // surfaces but doesn't crash the runtime.
+//
+// Recognised keys:
+//   - `max-tokens` (int)        — provider max output tokens per call.
+//   - `max-iterations` (int)    — fantasy step-count stop condition.
+//   - `memory-strategy` (str)   — `summarize` | `truncate`.
+//   - `memory-max-messages` (int) — compactor message-count budget.
+//   - `memory-max-tokens` (int) — compactor token budget (0 = disabled).
+//   - `temperature` (float)     — sampling temperature; 0 = deterministic.
+//   - `top-p` (float)           — nucleus-sampling cutoff.
+//   - `top-k` (int)             — top-K sampling cutoff.
+//   - `presence-penalty` (float)  — discourage repeating tokens.
+//   - `frequency-penalty` (float) — discourage frequent tokens.
+//
+// Sampling keys are forwarded to fantasy only when present in the map
+// so an unspecified knob leaves the provider's own default alone.
 func (c *AgentConfig) applyConfigsMap(configs map[string]string, logger *zap.Logger) {
 	for k, v := range configs {
 		switch k {
@@ -339,6 +374,26 @@ func (c *AgentConfig) applyConfigsMap(configs map[string]string, logger *zap.Log
 		case "memory-max-tokens":
 			if n, err := strconv.Atoi(v); err == nil {
 				c.Memory.MaxTokens = n
+			}
+		case "temperature":
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				c.Temperature = &f
+			}
+		case "top-p":
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				c.TopP = &f
+			}
+		case "top-k":
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				c.TopK = &n
+			}
+		case "presence-penalty":
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				c.PresencePenalty = &f
+			}
+		case "frequency-penalty":
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				c.FrequencyPenalty = &f
 			}
 		default:
 			logger.Debug("unknown config key", zap.String("key", k), zap.String("value", v))

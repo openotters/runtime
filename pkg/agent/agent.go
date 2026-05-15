@@ -24,6 +24,12 @@ const (
 	providerOpenRouter = "openrouter"
 )
 
+// Config bundles the inputs CreateAgent needs to talk to a provider.
+// MaxTokens / MaxIterations always apply (we have defaults in
+// agent_config.go); the sampling pointers (Temperature, TopP, TopK,
+// PresencePenalty, FrequencyPenalty) are optional — only forwarded
+// to fantasy when non-nil, so an unset config leaves the provider's
+// own defaults in place rather than zeroing them out.
 type Config struct {
 	Provider      string
 	ModelName     string
@@ -31,6 +37,12 @@ type Config struct {
 	APIBase       string
 	MaxTokens     int
 	MaxIterations int
+
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int64
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
 }
 
 func CreateAgent(
@@ -78,6 +90,22 @@ func CreateAgent(
 		fantasy.WithSystemPrompt(systemPrompt),
 		fantasy.WithMaxOutputTokens(int64(cfg.MaxTokens)),
 		fantasy.WithStopConditions(fantasy.StepCountIs(cfg.MaxIterations)),
+	}
+
+	if cfg.Temperature != nil {
+		opts = append(opts, fantasy.WithTemperature(*cfg.Temperature))
+	}
+	if cfg.TopP != nil {
+		opts = append(opts, fantasy.WithTopP(*cfg.TopP))
+	}
+	if cfg.TopK != nil {
+		opts = append(opts, fantasy.WithTopK(*cfg.TopK))
+	}
+	if cfg.PresencePenalty != nil {
+		opts = append(opts, fantasy.WithPresencePenalty(*cfg.PresencePenalty))
+	}
+	if cfg.FrequencyPenalty != nil {
+		opts = append(opts, fantasy.WithFrequencyPenalty(*cfg.FrequencyPenalty))
 	}
 
 	if len(tools) > 0 {
