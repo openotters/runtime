@@ -12,22 +12,32 @@ import (
 	"github.com/openotters/runtime/pkg/notes"
 )
 
-// BuildNotesTools returns the four LLM-facing tools that operate on
+// BuildNotesTools returns the six LLM-facing tools that operate on
 // the per-agent notes store: note_save, note_list, note_show,
-// note_delete. The store is shared across all four; maxBytes /
-// maxCount are the quota gates the store enforces inside Save.
+// note_delete, note_pin, note_unpin. The store is shared across all
+// six; maxBytes / maxCount are the quota gates the store enforces
+// inside Save.
 //
 // Notes are durable facts the model writes about its operator —
 // "the user's k8s cluster is named homelab" — that survive across
 // sessions for the lifetime of the agent. They are distinct from
 // chat memory (which the compactor may drop or summarise) and from
 // context files (which are immutable, baked into the image).
+//
+// note_pin / note_unpin toggle the in_context flag: pinned notes
+// flow into the system prompt on every step via the PrepareStep
+// callback, regardless of the notes-prompt-section config. Use it
+// for facts the model needs to lean on continuously (project name,
+// preferred conventions) rather than facts it only needs to recall
+// occasionally (one-off URLs, historical context).
 func BuildNotesTools(store *notes.Store, maxBytes, maxCount int) []fantasy.AgentTool {
 	return []fantasy.AgentTool{
 		noteSaveTool(store, maxBytes, maxCount),
 		noteListTool(store),
 		noteShowTool(store),
 		noteDeleteTool(store),
+		notePinTool(store),
+		noteUnpinTool(store),
 	}
 }
 
@@ -170,6 +180,75 @@ func noteDeleteTool(store *notes.Store) fantasy.AgentTool {
 			}, nil
 		},
 	)
+}
+
+func notePinTool(store *notes.Store) fantasy.AgentTool {
+	desc := "Pin a note into the system prompt. Pinned notes are " +
+		"injected as full-content blocks on every step so you don't " +
+		"have to re-read them with note_show — use for facts you'll " +
+		"reference continuously (project name, conventions). Pinning " +
+		"a non-existent key errors with the available keys."
+	return fantasy.NewAgentTool(
+		"note_pin",
+		desc,
+		func(ctx context.Context, in noteKeyInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return setInContextResp(ctx, store, in.Key, true)
+		},
+	)
+}
+
+func noteUnpinTool(store *notes.Store) fantasy.AgentTool {
+	desc := "Unpin a note from the system prompt. The note still " +
+		"exists; only its automatic inclusion in the prompt is " +
+		"cleared. Idempotent: unpinning an already-unpinned note " +
+		"still succeeds."
+	return fantasy.NewAgentTool(
+		"note_unpin",
+		desc,
+		func(ctx context.Context, in noteKeyInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return setInContextResp(ctx, store, in.Key, false)
+		},
+	)
+}
+
+// setInContextResp shares the body of note_pin and note_unpin: both
+// validate the key, call SetInContext, and map sql.ErrNoRows into a
+// missing-key hint for the model. The only behavioural difference
+// between the two tools is the bool they pass through.
+func setInContextResp(
+	ctx context.Context, store *notes.Store, key string, inContext bool,
+) (fantasy.ToolResponse, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		verb := "note_pin"
+		if !inContext {
+			verb = "note_unpin"
+		}
+		return fantasy.ToolResponse{
+			IsError: true,
+			Content: fmt.Sprintf("key is required (e.g. %s k8s-cluster)", verb),
+		}, nil
+	}
+
+	err := store.SetInContext(ctx, key, inContext)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fantasy.ToolResponse{
+			IsError: true,
+			Content: missingKeyHint(ctx, store, key),
+		}, nil
+	}
+	if err != nil {
+		return errToolResp(err)
+	}
+
+	if inContext {
+		return fantasy.ToolResponse{
+			Content: fmt.Sprintf("pinned %q (now in system prompt on every step)", key),
+		}, nil
+	}
+	return fantasy.ToolResponse{
+		Content: fmt.Sprintf("unpinned %q (no longer in system prompt)", key),
+	}, nil
 }
 
 // missingKeyHint builds the IsError message for note_show on a

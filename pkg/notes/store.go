@@ -19,11 +19,14 @@ import (
 
 // Note is one stored fact. Preview is denormalised on Save so list
 // rendering doesn't have to re-compute it across every row on every
-// PrepareStep call.
+// PrepareStep call. InContext, when true, marks the note for full
+// inclusion in the agent's system prompt on every step — the model
+// "pins" a fact it expects to reference frequently.
 type Note struct {
 	Key       string
 	Content   string
 	Preview   string
+	InContext bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -79,6 +82,58 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("notes schema: %w", err)
 		}
+	}
+
+	// in_context column added separately so existing alpha.19 rows
+	// keep working and re-running this migration stays a no-op.
+	if err := addColumnIfMissing(ctx, db, "notes", "in_context",
+		"INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_notes_in_context ON notes(in_context) WHERE in_context = 1`,
+	); err != nil {
+		return fmt.Errorf("idx_notes_in_context: %w", err)
+	}
+
+	return nil
+}
+
+// addColumnIfMissing is the column-add migration helper, duplicated
+// from pkg/memory so pkg/notes doesn't pick up a reverse dependency.
+// Both packages run their own migrations against the shared
+// memory.db connection.
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, decl string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("table_info %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if scanErr := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); scanErr != nil {
+			return fmt.Errorf("scan table_info: %w", scanErr)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return fmt.Errorf("rows table_info: %w", rowsErr)
+	}
+
+	if _, execErr := db.ExecContext(ctx,
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl),
+	); execErr != nil {
+		return fmt.Errorf("adding %s.%s: %w", table, column, execErr)
 	}
 	return nil
 }
@@ -139,9 +194,11 @@ func (s *Store) Save(ctx context.Context, key, content string, maxBytes, maxCoun
 // such key" hint.
 func (s *Store) Get(ctx context.Context, key string) (Note, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT key, content, preview, created_at, updated_at FROM notes WHERE key = ?`, key)
+		`SELECT key, content, preview, in_context, created_at, updated_at FROM notes WHERE key = ?`,
+		key,
+	)
 	var n Note
-	if err := row.Scan(&n.Key, &n.Content, &n.Preview, &n.CreatedAt, &n.UpdatedAt); err != nil {
+	if err := row.Scan(&n.Key, &n.Content, &n.Preview, &n.InContext, &n.CreatedAt, &n.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Note{}, err
 		}
@@ -164,25 +221,69 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // The model uses this ordering when deciding what's still relevant
 // — touching a note acts as an implicit "this still matters".
 func (s *Store) List(ctx context.Context) ([]Note, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, content, preview, created_at, updated_at FROM notes ORDER BY updated_at DESC`)
+	return s.queryNotes(ctx, listAllSQL)
+}
+
+// ListInContext returns only the notes flagged in_context = 1. Used
+// by the PrepareStep callback to render the per-step pinned block.
+// Same row shape as List so the renderer can treat both uniformly.
+func (s *Store) ListInContext(ctx context.Context) ([]Note, error) {
+	return s.queryNotes(ctx, listInContextSQL)
+}
+
+const (
+	listAllSQL = `SELECT key, content, preview, in_context, created_at, updated_at
+		FROM notes ORDER BY updated_at DESC`
+	listInContextSQL = `SELECT key, content, preview, in_context, created_at, updated_at
+		FROM notes WHERE in_context = 1 ORDER BY updated_at DESC`
+)
+
+func (s *Store) queryNotes(ctx context.Context, query string) ([]Note, error) {
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("list notes: %w", err)
+		return nil, fmt.Errorf("query notes: %w", err)
 	}
 	defer rows.Close()
 
 	var out []Note
 	for rows.Next() {
 		var n Note
-		if scanErr := rows.Scan(&n.Key, &n.Content, &n.Preview, &n.CreatedAt, &n.UpdatedAt); scanErr != nil {
+		if scanErr := rows.Scan(
+			&n.Key, &n.Content, &n.Preview, &n.InContext, &n.CreatedAt, &n.UpdatedAt,
+		); scanErr != nil {
 			return nil, fmt.Errorf("scan note: %w", scanErr)
 		}
 		out = append(out, n)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		return nil, fmt.Errorf("rows list notes: %w", rowsErr)
+		return nil, fmt.Errorf("rows notes: %w", rowsErr)
 	}
 	return out, nil
+}
+
+// SetInContext flips a note's in_context flag. Errors with
+// sql.ErrNoRows if the key doesn't exist so the tool layer can
+// surface a clean "no such note" hint.
+func (s *Store) SetInContext(ctx context.Context, key string, inContext bool) error {
+	flag := 0
+	if inContext {
+		flag = 1
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE notes SET in_context = ?, updated_at = ? WHERE key = ?`,
+		flag, time.Now().UTC(), key,
+	)
+	if err != nil {
+		return fmt.Errorf("set in_context for %q: %w", key, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // Count returns the total number of stored notes. Cheap — used by

@@ -78,3 +78,33 @@ func escapePipe(s string) string {
 	s = strings.ReplaceAll(s, "|", `\|`)
 	return s
 }
+
+// RenderInContextBlock renders the pinned-notes section that flows
+// into the system prompt on every step. Distinct from
+// RenderPromptSection (the table of all notes by preview) in that
+// each pinned note appears as a full-content `## <key>` markdown
+// section — the model gets the whole body, not just a one-line
+// preview, because pinned notes are facts it's expected to lean on
+// without re-fetching.
+//
+// Empty input → empty string so the caller can skip the separator.
+func RenderInContextBlock(pinned []Note) string {
+	if len(pinned) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Pinned notes\n\n")
+	b.WriteString("These notes are integrated into your system prompt because they were ")
+	b.WriteString("flagged in-context. Use `note_unpin <key>` to remove from this block ")
+	b.WriteString("(the underlying note stays saved).\n")
+
+	for _, n := range pinned {
+		b.WriteString("\n### ")
+		b.WriteString(n.Key)
+		b.WriteString("\n\n")
+		b.WriteString(strings.TrimSpace(n.Content))
+		b.WriteString("\n")
+	}
+	return b.String()
+}

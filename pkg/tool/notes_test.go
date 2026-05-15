@@ -61,7 +61,7 @@ func TestBuildNotesTools_Set(t *testing.T) {
 
 	// The runtime + capability list depend on this exact set —
 	// each tool name is recorded in pool.go's runtimeCapsForExtras.
-	want := []string{"note_save", "note_list", "note_show", "note_delete"}
+	want := []string{"note_save", "note_list", "note_show", "note_delete", "note_pin", "note_unpin"}
 	got := make([]string, len(tools))
 	for i, tl := range tools {
 		got[i] = tl.Info().Name
@@ -73,6 +73,54 @@ func TestBuildNotesTools_Set(t *testing.T) {
 		if got[i] != n {
 			t.Errorf("tools[%d] = %q, want %q", i, got[i], n)
 		}
+	}
+}
+
+func TestNotePin_Existing(t *testing.T) {
+	t.Parallel()
+	store := openNotesStore(t)
+	tools := tool.BuildNotesTools(store, 4096, 64)
+
+	_ = callTool(t, tools, "note_save", `{"key":"k","content":"v"}`)
+	resp := callTool(t, tools, "note_pin", `{"key":"k"}`)
+	if resp.IsError {
+		t.Fatalf("unexpected IsError: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "pinned") {
+		t.Errorf("missing 'pinned' marker: %q", resp.Content)
+	}
+}
+
+func TestNotePin_MissingKeyListsExisting(t *testing.T) {
+	t.Parallel()
+	store := openNotesStore(t)
+	tools := tool.BuildNotesTools(store, 4096, 64)
+
+	_ = callTool(t, tools, "note_save", `{"key":"a","content":"x"}`)
+	resp := callTool(t, tools, "note_pin", `{"key":"nope"}`)
+	if !resp.IsError {
+		t.Fatalf("missing key should be IsError")
+	}
+	for _, needle := range []string{"a", "nope"} {
+		if !strings.Contains(resp.Content, needle) {
+			t.Errorf("hint missing %q: %q", needle, resp.Content)
+		}
+	}
+}
+
+func TestNoteUnpin_Existing(t *testing.T) {
+	t.Parallel()
+	store := openNotesStore(t)
+	tools := tool.BuildNotesTools(store, 4096, 64)
+
+	_ = callTool(t, tools, "note_save", `{"key":"k","content":"v"}`)
+	_ = callTool(t, tools, "note_pin", `{"key":"k"}`)
+	resp := callTool(t, tools, "note_unpin", `{"key":"k"}`)
+	if resp.IsError {
+		t.Fatalf("unexpected IsError: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "unpinned") {
+		t.Errorf("missing 'unpinned' marker: %q", resp.Content)
 	}
 }
 

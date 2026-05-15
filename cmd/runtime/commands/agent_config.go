@@ -181,19 +181,19 @@ func (c *AgentConfig) setup(
 	// per-flavour adapters. Real model errors surface on the first
 	// fantasy.Generate call anyway, so we skip the early probe.
 
-	// notes-prompt-section: opt-in injection of the notes block into
-	// the per-step system prompt via fantasy's PrepareStep callback.
-	// "off" (default) keeps the model tools-only — it must call
-	// note_list / note_show to discover and read notes. "above" /
-	// "below" position the block relative to the assembled context.
-	var extraOpts []fantasy.AgentOption
-	if c.Notes.PromptSection != "off" {
-		extraOpts = append(extraOpts, fantasy.WithPrepareStep(
+	// Notes PrepareStep is always installed: it surfaces pinned
+	// (in_context) notes into the system prompt on every step,
+	// regardless of the notes-prompt-section setting. The section
+	// value only controls the OPTIONAL preview-table of all notes —
+	// "off" (default) leaves the model tools-only for non-pinned
+	// notes; "above" / "below" adds the table at that placement.
+	extraOpts := []fantasy.AgentOption{
+		fantasy.WithPrepareStep(
 			agent.BuildNotesPrepareStep(systemPrompt, notesStore, c.Notes.PromptSection, logger),
-		))
-		logger.Info("notes prompt-section enabled",
-			zap.String("placement", c.Notes.PromptSection))
+		),
 	}
+	logger.Info("notes prepare-step installed",
+		zap.String("section", c.Notes.PromptSection))
 
 	fantasyAgent, lm, err := agent.CreateAgent(ctx, agent.Config{
 		Provider: provider, ModelName: modelName,

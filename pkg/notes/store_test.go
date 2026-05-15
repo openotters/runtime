@@ -230,6 +230,99 @@ func TestStore_Migrate_Idempotent(t *testing.T) {
 	}
 }
 
+func TestStore_SetInContext_TogglesFlag(t *testing.T) {
+	t.Parallel()
+	store, _ := openTestDB(t)
+	ctx := context.Background()
+
+	if err := store.Save(ctx, "k", "body", 4096, 64); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Freshly saved note is unpinned by default.
+	n, _ := store.Get(ctx, "k")
+	if n.InContext {
+		t.Errorf("new note must default to InContext=false")
+	}
+
+	// Pin → InContext flips true.
+	if err := store.SetInContext(ctx, "k", true); err != nil {
+		t.Fatalf("SetInContext true: %v", err)
+	}
+	n, _ = store.Get(ctx, "k")
+	if !n.InContext {
+		t.Errorf("after pin, InContext must be true")
+	}
+
+	// Unpin → back to false.
+	if err := store.SetInContext(ctx, "k", false); err != nil {
+		t.Fatalf("SetInContext false: %v", err)
+	}
+	n, _ = store.Get(ctx, "k")
+	if n.InContext {
+		t.Errorf("after unpin, InContext must be false")
+	}
+}
+
+func TestStore_SetInContext_MissingReturnsErrNoRows(t *testing.T) {
+	t.Parallel()
+	store, _ := openTestDB(t)
+	ctx := context.Background()
+
+	if err := store.SetInContext(ctx, "ghost", true); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("SetInContext on missing key = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestStore_ListInContext_OnlyPinned(t *testing.T) {
+	t.Parallel()
+	store, _ := openTestDB(t)
+	ctx := context.Background()
+
+	_ = store.Save(ctx, "a", "first", 4096, 64)
+	_ = store.Save(ctx, "b", "second", 4096, 64)
+	_ = store.Save(ctx, "c", "third", 4096, 64)
+	_ = store.SetInContext(ctx, "b", true)
+
+	pinned, err := store.ListInContext(ctx)
+	if err != nil {
+		t.Fatalf("ListInContext: %v", err)
+	}
+	if len(pinned) != 1 {
+		t.Fatalf("ListInContext len = %d, want 1", len(pinned))
+	}
+	if pinned[0].Key != "b" {
+		t.Errorf("ListInContext[0].Key = %q, want %q", pinned[0].Key, "b")
+	}
+}
+
+func TestStore_Save_PreservesInContextOnUpsert(t *testing.T) {
+	t.Parallel()
+	store, _ := openTestDB(t)
+	ctx := context.Background()
+
+	// Save → pin → re-save (overwrite content). The pin must
+	// survive: re-using note_save shouldn't unpin the note out
+	// from under the model.
+	if err := store.Save(ctx, "k", "v1", 4096, 64); err != nil {
+		t.Fatalf("Save v1: %v", err)
+	}
+	if err := store.SetInContext(ctx, "k", true); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if err := store.Save(ctx, "k", "v2", 4096, 64); err != nil {
+		t.Fatalf("Save v2: %v", err)
+	}
+
+	n, _ := store.Get(ctx, "k")
+	if !n.InContext {
+		t.Errorf("upsert dropped InContext flag")
+	}
+	if n.Content != "v2" {
+		t.Errorf("content not replaced: %q", n.Content)
+	}
+}
+
 func TestStore_Save_PreviewTruncatesLongLines(t *testing.T) {
 	t.Parallel()
 	store, _ := openTestDB(t)
