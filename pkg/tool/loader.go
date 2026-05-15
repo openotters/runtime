@@ -6,6 +6,8 @@ import (
 
 	"charm.land/fantasy"
 	"go.uber.org/zap"
+
+	"github.com/openotters/runtime/pkg/notes"
 )
 
 // Def declares a tool the runtime should register with the LLM. The
@@ -36,7 +38,20 @@ type Docs struct {
 	Usage string
 }
 
-func LoadTools(defs []Def, workDir string, logger *zap.Logger) ([]fantasy.AgentTool, error) {
+// LoadTools assembles the runtime's full tool set: the BIN-backed
+// tools declared in agent.yaml, the daemon-callback job tools
+// (when the agent has a daemon URL + token), the introspection
+// tools (context_*, env_list, mount_list), and — when notesStore
+// is non-nil — the note_* tools.
+//
+// notesStore is intentionally optional: dev invocations of the
+// runtime binary without a memory.db (e.g. a one-shot CLI prompt)
+// still work, just without the notes capability registered.
+func LoadTools(
+	defs []Def, workDir string,
+	notesStore *notes.Store, notesMaxBytes, notesMaxCount int,
+	logger *zap.Logger,
+) ([]fantasy.AgentTool, error) {
 	tools := make([]fantasy.AgentTool, 0, len(defs))
 
 	for _, cfg := range defs {
@@ -73,6 +88,12 @@ func LoadTools(defs []Def, workDir string, logger *zap.Logger) ([]fantasy.AgentT
 	introspect := BuildIntrospectionTools(workDir)
 	tools = append(tools, introspect...)
 	logger.Info("introspection tools registered", zap.Int("count", len(introspect)))
+
+	if notesStore != nil {
+		ns := BuildNotesTools(notesStore, notesMaxBytes, notesMaxCount)
+		tools = append(tools, ns...)
+		logger.Info("notes tools registered", zap.Int("count", len(ns)))
+	}
 
 	return tools, nil
 }

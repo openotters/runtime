@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/openotters/runtime/pkg/agent"
 	"github.com/openotters/runtime/pkg/memory"
+	"github.com/openotters/runtime/pkg/notes"
 	"github.com/openotters/runtime/pkg/tool"
 )
 
@@ -40,17 +42,30 @@ type MemoryServeConfig struct {
 	MaxTokens   int    `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
 }
 
+// NotesServeConfig holds the notes-tool quotas + the prompt-section
+// placement switch. Like MemoryServeConfig, populated from
+// agent.yaml's configs: block — keys `notes-max-bytes-per`,
+// `notes-max-count`, `notes-prompt-section`.
+type NotesServeConfig struct {
+	MaxBytesPer   int    `json:"max_bytes_per,omitempty" yaml:"max_bytes_per,omitempty"`
+	MaxCount      int    `json:"max_count,omitempty"      yaml:"max_count,omitempty"`
+	PromptSection string `json:"prompt_section,omitempty" yaml:"prompt_section,omitempty"`
+}
+
 // Runtime tunables come from agent.yaml's configs: block, not CLI
 // flags. The Agentfile declares them (CONFIG max-tokens 2048, …),
 // the daemon stamps the resolved map into agent.yaml, and the
 // runtime parses them into typed fields below. Defaults live in
 // applyConfigDefaults; configs entries override.
 const (
-	defaultMaxTokens         = 4096
-	defaultMaxIterations     = 20
-	defaultMemoryStrategy    = "summarize"
-	defaultMemoryMaxMessages = 20
-	defaultMemoryMaxTokens   = 0
+	defaultMaxTokens          = 4096
+	defaultMaxIterations      = 20
+	defaultMemoryStrategy     = "summarize"
+	defaultMemoryMaxMessages  = 20
+	defaultMemoryMaxTokens    = 0
+	defaultNotesMaxBytesPer   = 4096
+	defaultNotesMaxCount      = 64
+	defaultNotesPromptSection = "off"
 )
 
 type AgentConfig struct {
@@ -72,6 +87,7 @@ type AgentConfig struct {
 	MaxTokens     int               `kong:"-"`
 	MaxIterations int               `kong:"-"`
 	Memory        MemoryServeConfig `kong:"-"`
+	Notes         NotesServeConfig  `kong:"-"`
 
 	// Provider sampling knobs. Pointer types so "unset" stays
 	// distinguishable from a deliberately-zero value (temperature: 0
@@ -135,7 +151,25 @@ func (c *AgentConfig) setup(
 		zap.Int("bytes", len(systemPrompt)),
 	)
 
-	tools, err := c.loadTools(logger)
+	// Open the agent's sqlite database once and hand the same
+	// connection to both stores (messages + notes). Two stores on
+	// one *sql.DB is fine — SQLite handles concurrent connections
+	// to one file via WAL, but a single Go connection avoids the
+	// locking entirely.
+	db, err := c.openDB(sqlite)
+	if err != nil {
+		return nil, err
+	}
+	memStore, err := memory.NewStore(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	notesStore, err := notes.NewStore(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := c.loadTools(notesStore, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -147,23 +181,33 @@ func (c *AgentConfig) setup(
 	// per-flavour adapters. Real model errors surface on the first
 	// fantasy.Generate call anyway, so we skip the early probe.
 
+	// notes-prompt-section: opt-in injection of the notes block into
+	// the per-step system prompt via fantasy's PrepareStep callback.
+	// "off" (default) keeps the model tools-only — it must call
+	// note_list / note_show to discover and read notes. "above" /
+	// "below" position the block relative to the assembled context.
+	var extraOpts []fantasy.AgentOption
+	if c.Notes.PromptSection != "off" {
+		extraOpts = append(extraOpts, fantasy.WithPrepareStep(
+			agent.BuildNotesPrepareStep(systemPrompt, notesStore, c.Notes.PromptSection, logger),
+		))
+		logger.Info("notes prompt-section enabled",
+			zap.String("placement", c.Notes.PromptSection))
+	}
+
 	fantasyAgent, lm, err := agent.CreateAgent(ctx, agent.Config{
 		Provider: provider, ModelName: modelName,
 		APIKey: c.APIKey, APIBase: c.APIBase,
 		MaxTokens: c.MaxTokens, MaxIterations: c.MaxIterations,
 		Temperature: c.Temperature, TopP: c.TopP, TopK: c.TopK,
 		PresencePenalty: c.PresencePenalty, FrequencyPenalty: c.FrequencyPenalty,
+		ExtraAgentOpts: extraOpts,
 	}, systemPrompt, tools, logger)
 	if err != nil {
 		return nil, err
 	}
 
 	logger.Info("model validated", zap.String("model", c.Model))
-
-	store, err := c.openStore(ctx, sqlite)
-	if err != nil {
-		return nil, err
-	}
 
 	compactor := memory.NewCompactor(memory.Config{
 		Strategy:    c.Memory.Strategy,
@@ -172,7 +216,7 @@ func (c *AgentConfig) setup(
 	}, logger)
 
 	return &agentSetup{
-		svc:          agent.NewService(fantasyAgent, lm, store, compactor, logger),
+		svc:          agent.NewService(fantasyAgent, lm, memStore, compactor, logger),
 		systemPrompt: systemPrompt,
 		toolCount:    len(tools),
 	}, nil
@@ -191,20 +235,18 @@ func (c *AgentConfig) ensureDirs() error {
 	return os.MkdirAll(dbDir, 0o755)
 }
 
-func (c *AgentConfig) openStore(ctx context.Context, sqlite *cmd.SQLite) (*memory.Store, error) {
+// openDB returns the agent's sqlite *sql.DB handle, defaulting the
+// sqlite Path to dbPath() when the operator left it as the in-memory
+// sentinel. Split out from openStore so memory.Store and notes.Store
+// can share the same connection.
+func (c *AgentConfig) openDB(sqlite *cmd.SQLite) (*sql.DB, error) {
 	if sqlite.Path == ":memory:" {
 		sqlite.Path = c.dbPath()
 	}
-
-	db, err := sqlite.Open()
-	if err != nil {
-		return nil, err
-	}
-
-	return memory.NewStore(ctx, db)
+	return sqlite.Open()
 }
 
-func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error) {
+func (c *AgentConfig) loadTools(notesStore *notes.Store, logger *zap.Logger) ([]fantasy.AgentTool, error) {
 	defs := make([]tool.Def, len(c.Tools))
 	for i, t := range c.Tools {
 		binary := t.Binary
@@ -219,7 +261,7 @@ func (c *AgentConfig) loadTools(logger *zap.Logger) ([]fantasy.AgentTool, error)
 		}
 	}
 
-	return tool.LoadTools(defs, c.Root, logger)
+	return tool.LoadTools(defs, c.Root, notesStore, c.Notes.MaxBytesPer, c.Notes.MaxCount, logger)
 }
 
 // resolveDocPath rewrites a doc path the executor stamped into
@@ -331,6 +373,9 @@ func (c *AgentConfig) applyConfigDefaults() {
 	c.Memory.Strategy = defaultMemoryStrategy
 	c.Memory.MaxMessages = defaultMemoryMaxMessages
 	c.Memory.MaxTokens = defaultMemoryMaxTokens
+	c.Notes.MaxBytesPer = defaultNotesMaxBytesPer
+	c.Notes.MaxCount = defaultNotesMaxCount
+	c.Notes.PromptSection = defaultNotesPromptSection
 }
 
 // applyConfigsMap reads the kebab-case keys the Agentfile's CONFIG
@@ -349,9 +394,19 @@ func (c *AgentConfig) applyConfigDefaults() {
 //   - `top-k` (int)             — top-K sampling cutoff.
 //   - `presence-penalty` (float)  — discourage repeating tokens.
 //   - `frequency-penalty` (float) — discourage frequent tokens.
+//   - `notes-max-bytes-per` (int) — per-note size cap; note_save rejects past this.
+//   - `notes-max-count` (int)     — total notes cap; note_save rejects new keys past this.
+//   - `notes-prompt-section` (str) — `off` (default) / `above` / `below`. When set,
+//     a PrepareStep callback injects a `## Notes` table into the system prompt
+//     on every step.
 //
 // Sampling keys are forwarded to fantasy only when present in the map
 // so an unspecified knob leaves the provider's own default alone.
+//
+// branch is trivial. Splitting into per-family helpers would just push
+// the chain up one level without changing how anyone reads it.
+//
+//nolint:gocognit // a flat dispatch of kebab-key → struct field; each
 func (c *AgentConfig) applyConfigsMap(configs map[string]string, logger *zap.Logger) {
 	for k, v := range configs {
 		switch k {
@@ -394,6 +449,23 @@ func (c *AgentConfig) applyConfigsMap(configs map[string]string, logger *zap.Log
 		case "frequency-penalty":
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
 				c.FrequencyPenalty = &f
+			}
+		case "notes-max-bytes-per":
+			if n, err := strconv.Atoi(v); err == nil {
+				c.Notes.MaxBytesPer = n
+			}
+		case "notes-max-count":
+			if n, err := strconv.Atoi(v); err == nil {
+				c.Notes.MaxCount = n
+			}
+		case "notes-prompt-section":
+			switch v {
+			case "off", "above", "below":
+				c.Notes.PromptSection = v
+			default:
+				logger.Warn("invalid notes-prompt-section value; keeping default",
+					zap.String("value", v),
+					zap.String("default", c.Notes.PromptSection))
 			}
 		default:
 			logger.Debug("unknown config key", zap.String("key", k), zap.String("value", v))

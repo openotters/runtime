@@ -29,7 +29,7 @@ func TestLoadTools_DescriptionAppendsDocBody(t *testing.T) {
 		{Name: "ls", Description: "list", Binary: "/bin/ls"},
 	}
 
-	tools, err := tool.LoadTools(defs, dir, zap.NewNop())
+	tools, err := tool.LoadTools(defs, dir, nil, 0, 0, zap.NewNop())
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestLoadTools_MissingDocIsTolerated(t *testing.T) {
 		Name:   "x",
 		Binary: "/bin/true",
 		Docs:   tool.Docs{Usage: "/no/such/path/USAGE.md"},
-	}}, "/", zap.NewNop())
+	}}, "/", nil, 0, 0, zap.NewNop())
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)
 	}

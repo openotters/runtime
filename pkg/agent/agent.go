@@ -30,6 +30,12 @@ const (
 // PresencePenalty, FrequencyPenalty) are optional — only forwarded
 // to fantasy when non-nil, so an unset config leaves the provider's
 // own defaults in place rather than zeroing them out.
+//
+// ExtraAgentOpts is the escape hatch for fantasy AgentOptions the
+// runtime composes outside this package — currently the notes
+// PrepareStep callback. Kept as a slice (rather than a sequence of
+// dedicated Config fields) so adding another optional hook doesn't
+// require a new field on Config.
 type Config struct {
 	Provider      string
 	ModelName     string
@@ -43,6 +49,8 @@ type Config struct {
 	TopK             *int64
 	PresencePenalty  *float64
 	FrequencyPenalty *float64
+
+	ExtraAgentOpts []fantasy.AgentOption
 }
 
 func CreateAgent(
@@ -111,6 +119,8 @@ func CreateAgent(
 	if len(tools) > 0 {
 		opts = append(opts, fantasy.WithTools(tools...))
 	}
+
+	opts = append(opts, cfg.ExtraAgentOpts...)
 
 	return fantasy.NewAgent(lm, opts...), lm, nil
 }
