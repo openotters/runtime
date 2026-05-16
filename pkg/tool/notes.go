@@ -51,12 +51,13 @@ type noteKeyInput struct {
 }
 
 func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool {
-	desc := "Save a durable fact under a short key. Notes persist " +
-		"across sessions for the lifetime of this agent — use them for " +
-		"things the user expects you to remember (cluster names, " +
-		"preferred conventions, persistent configuration). Re-using a " +
-		"key OVERWRITES the existing note. Call note_list first if " +
-		"you're not sure whether a key is taken."
+	desc := "**Save this whenever the user states a durable fact** — " +
+		"cluster names, kubeconfig paths, preferred conventions, " +
+		"environment variable locations, project conventions, anything " +
+		"you'll want to recall in a future session. Notes persist across " +
+		"sessions; chat history does not. If you don't save now, you'll " +
+		"forget next time. Re-using a key OVERWRITES the existing note; " +
+		"call note_list first if unsure whether a key is taken."
 	return fantasy.NewAgentTool(
 		"note_save",
 		desc,
@@ -94,10 +95,11 @@ func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool 
 }
 
 func noteListTool(store *notes.Store) fantasy.AgentTool {
-	desc := "List all stored notes — key, last-updated relative " +
-		"time, and a one-line preview of each. Use this as your " +
-		"index before deciding whether to call note_show (full body) " +
-		"or note_save (with a fresh or re-used key)."
+	desc := "**Run this at the start of any non-trivial task** — and " +
+		"before asking the user a question whose answer you might " +
+		"have already saved. Returns key + last-updated + preview for " +
+		"every note. Use note_show for the full body once you know " +
+		"the key you want."
 	return fantasy.NewAgentTool(
 		"note_list",
 		desc,
@@ -115,10 +117,10 @@ func noteListTool(store *notes.Store) fantasy.AgentTool {
 }
 
 func noteShowTool(store *notes.Store) fantasy.AgentTool {
-	desc := "Show one note's full content by key. Returns the raw " +
-		"body — the previews from note_list are truncated, this is " +
-		"the source of truth. Errors with the list of available " +
-		"keys if the requested key doesn't exist."
+	desc := "Read the full body of a saved note. Use after note_list " +
+		"to load the specific fact you need — previews are truncated, " +
+		"this is the source of truth. Errors with the list of " +
+		"available keys when the requested key doesn't exist."
 	return fantasy.NewAgentTool(
 		"note_show",
 		desc,
@@ -147,10 +149,12 @@ func noteShowTool(store *notes.Store) fantasy.AgentTool {
 }
 
 func noteDeleteTool(store *notes.Store) fantasy.AgentTool {
-	desc := "Delete a note by key. Idempotent: deleting a key that " +
-		"doesn't exist still succeeds (the response distinguishes " +
-		"the two cases). Use this to retract facts the user has " +
-		"corrected or that no longer apply."
+	desc := "Drop a saved note when the user retracts the fact, " +
+		"corrects it, or it's no longer accurate. Idempotent: " +
+		"deleting a missing key still succeeds (the response " +
+		"distinguishes the two cases). Pair with note_save when " +
+		"replacing a fact wholesale — overwriting an existing key " +
+		"via note_save is usually faster than delete+save."
 	return fantasy.NewAgentTool(
 		"note_delete",
 		desc,
@@ -183,11 +187,13 @@ func noteDeleteTool(store *notes.Store) fantasy.AgentTool {
 }
 
 func notePinTool(store *notes.Store) fantasy.AgentTool {
-	desc := "Pin a note into the system prompt. Pinned notes are " +
-		"injected as full-content blocks on every step so you don't " +
-		"have to re-read them with note_show — use for facts you'll " +
-		"reference continuously (project name, conventions). Pinning " +
-		"a non-existent key errors with the available keys."
+	desc := "**Pin a note when you'll reference it on every step** of " +
+		"the current task — target cluster, active project, deployment " +
+		"invariant. Pinned notes flow into your system prompt as " +
+		"full-content blocks automatically, so you stop burning tool " +
+		"calls re-reading them. When the task is done, note_unpin to " +
+		"keep the pinned set tight (token budget). Pinning a missing " +
+		"key errors with the available keys."
 	return fantasy.NewAgentTool(
 		"note_pin",
 		desc,
@@ -198,10 +204,11 @@ func notePinTool(store *notes.Store) fantasy.AgentTool {
 }
 
 func noteUnpinTool(store *notes.Store) fantasy.AgentTool {
-	desc := "Unpin a note from the system prompt. The note still " +
-		"exists; only its automatic inclusion in the prompt is " +
-		"cleared. Idempotent: unpinning an already-unpinned note " +
-		"still succeeds."
+	desc := "Unpin when a note is no longer load-bearing for the " +
+		"current task — keep the pinned set tight so the prompt " +
+		"stays focused. The note stays saved (note_show still works); " +
+		"only automatic prompt-inclusion is cleared. Idempotent: " +
+		"unpinning an already-unpinned note succeeds."
 	return fantasy.NewAgentTool(
 		"note_unpin",
 		desc,
