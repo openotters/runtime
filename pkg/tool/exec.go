@@ -81,7 +81,21 @@ func (e *executor) Run(ctx context.Context, in Input, _ fantasy.ToolCall) (fanta
 		}, nil
 	}
 
-	return fantasy.ToolResponse{Content: stdout.String()}, nil
+	// Empty stdout on a successful exit is ambiguous to the model:
+	// it reads "no content" as "did the call even happen?" and
+	// retries the same tool call. Synthesise a success sentinel so
+	// the model has a positive signal to anchor on. Stderr is
+	// surfaced when present (tools that warn but still succeed).
+	content := stdout.String()
+	if content == "" {
+		if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
+			content = fmt.Sprintf("(exit 0, no stdout; stderr: %s)", errOut)
+		} else {
+			content = "(exit 0, no output)"
+		}
+	}
+
+	return fantasy.ToolResponse{Content: content}, nil
 }
 
 // env builds the environment the tool subprocess runs with. We

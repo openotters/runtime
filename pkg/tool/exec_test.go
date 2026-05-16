@@ -158,6 +158,61 @@ func TestExecutorRun_EmptyCallIsRejected(t *testing.T) {
 	}
 }
 
+func TestExecutorRun_EmptyStdoutSurfacesSentinel(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skipf("/bin/sh unavailable: %v", err)
+	}
+
+	// `sh -c "true"` exits 0 with no stdout and no stderr. Without
+	// a sentinel the model would get an empty Content and read it
+	// as "did anything happen?" — the exact loop this guards.
+	e := newExecutor("/bin/sh", nil, "", zap.NewNop())
+
+	resp, err := e.Run(context.Background(),
+		Input{Args: []string{"-c", "true"}}, fantasy.ToolCall{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if resp.IsError {
+		t.Fatalf("expected success, got IsError=true content=%q", resp.Content)
+	}
+
+	if resp.Content != "(exit 0, no output)" {
+		t.Errorf("Content = %q, want %q", resp.Content, "(exit 0, no output)")
+	}
+}
+
+func TestExecutorRun_EmptyStdoutWithStderrIncludesStderr(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skipf("/bin/sh unavailable: %v", err)
+	}
+
+	// Exit 0 + empty stdout + non-empty stderr — surface the
+	// stderr so the model sees the warning rather than a bare
+	// "no output" sentinel.
+	e := newExecutor("/bin/sh", nil, "", zap.NewNop())
+
+	resp, err := e.Run(context.Background(),
+		Input{Args: []string{"-c", "echo heads-up >&2; true"}}, fantasy.ToolCall{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if resp.IsError {
+		t.Fatalf("expected success, got IsError=true content=%q", resp.Content)
+	}
+
+	want := "(exit 0, no stdout; stderr: heads-up)"
+	if resp.Content != want {
+		t.Errorf("Content = %q, want %q", resp.Content, want)
+	}
+}
+
 func TestExecutorRun_NonZeroExitMarksError(t *testing.T) {
 	t.Parallel()
 
