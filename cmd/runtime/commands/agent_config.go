@@ -113,9 +113,12 @@ func (c *AgentConfig) tmpDir() string       { return filepath.Join(c.Root, "tmp"
 func (c *AgentConfig) dbPath() string       { return filepath.Join(c.Root, "var", "lib", "memory.db") }
 
 type agentSetup struct {
-	svc          *agent.Service
-	systemPrompt string
-	toolCount    int
+	svc           *agent.Service
+	notesStore    *notes.Store
+	notesMaxBytes int
+	notesMaxCount int
+	systemPrompt  string
+	toolCount     int
 }
 
 func (c *AgentConfig) setup(
@@ -216,9 +219,12 @@ func (c *AgentConfig) setup(
 	}, logger)
 
 	return &agentSetup{
-		svc:          agent.NewService(fantasyAgent, lm, memStore, compactor, logger),
-		systemPrompt: systemPrompt,
-		toolCount:    len(tools),
+		svc:           agent.NewService(fantasyAgent, lm, memStore, compactor, logger),
+		notesStore:    notesStore,
+		notesMaxBytes: c.Notes.MaxBytesPer,
+		notesMaxCount: c.Notes.MaxCount,
+		systemPrompt:  systemPrompt,
+		toolCount:     len(tools),
 	}, nil
 }
 

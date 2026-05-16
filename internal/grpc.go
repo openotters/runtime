@@ -2,20 +2,44 @@ package internal
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	runtimev1 "github.com/openotters/agentfile/executor/api/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/openotters/runtime/pkg/agent"
+	"github.com/openotters/runtime/pkg/notes"
 )
 
 type GRPCServer struct {
 	runtimev1.UnimplementedAgentRuntimeServer
-	svc       *agent.Service
-	agentName string
-	model     string
+	svc          *agent.Service
+	notesStore   *notes.Store
+	notesMaxByte int
+	notesMaxCnt  int
+	agentName    string
+	model        string
 }
 
-func NewGRPCServer(svc *agent.Service, agentName, model string) runtimev1.AgentRuntimeServer {
-	return &GRPCServer{svc: svc, agentName: agentName, model: model}
+// NewGRPCServer constructs the runtime's gRPC server. notesStore /
+// maxBytes / maxCount are optional: when nil/0 the Notes RPCs reply
+// with codes.Unavailable so a dev invocation of the runtime binary
+// without a notes store doesn't silently accept writes.
+func NewGRPCServer(
+	svc *agent.Service,
+	notesStore *notes.Store, notesMaxBytes, notesMaxCount int,
+	agentName, model string,
+) runtimev1.AgentRuntimeServer {
+	return &GRPCServer{
+		svc:          svc,
+		notesStore:   notesStore,
+		notesMaxByte: notesMaxBytes,
+		notesMaxCnt:  notesMaxCount,
+		agentName:    agentName,
+		model:        model,
+	}
 }
 
 func (s *GRPCServer) Chat(ctx context.Context, req *runtimev1.ChatRequest) (*runtimev1.ChatResponse, error) {
@@ -159,4 +183,139 @@ func (s *GRPCServer) Ready(
 	_ context.Context, _ *runtimev1.ReadyRequest,
 ) (*runtimev1.ReadyResponse, error) {
 	return &runtimev1.ReadyResponse{Ready: s.svc != nil}, nil
+}
+
+// Notes RPCs — back the per-agent notes store with the same
+// pkg/notes Store the tool layer uses. The daemon proxies these to
+// the operator UI; the model still goes through note_* tools.
+
+func (s *GRPCServer) ListNotes(
+	ctx context.Context, req *runtimev1.ListNotesRequest,
+) (*runtimev1.ListNotesResponse, error) {
+	if s.notesStore == nil {
+		return nil, status.Error(codes.Unavailable, "notes store not configured")
+	}
+	var (
+		all []notes.Note
+		err error
+	)
+	if req.GetOnlyInContext() {
+		all, err = s.notesStore.ListInContext(ctx)
+	} else {
+		all, err = s.notesStore.List(ctx)
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list notes: %s", err)
+	}
+	out := make([]*runtimev1.Note, 0, len(all))
+	for _, n := range all {
+		// List responses omit Content to keep payloads small —
+		// clients use GetNote when they need the body.
+		out = append(out, noteToProto(n, false))
+	}
+	return &runtimev1.ListNotesResponse{Notes: out}, nil
+}
+
+func (s *GRPCServer) GetNote(
+	ctx context.Context, req *runtimev1.GetNoteRequest,
+) (*runtimev1.GetNoteResponse, error) {
+	if s.notesStore == nil {
+		return nil, status.Error(codes.Unavailable, "notes store not configured")
+	}
+	n, err := s.notesStore.Get(ctx, req.GetKey())
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, status.Errorf(codes.NotFound, "no note %q", req.GetKey())
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get note: %s", err)
+	}
+	return &runtimev1.GetNoteResponse{Note: noteToProto(n, true)}, nil
+}
+
+func (s *GRPCServer) SaveNote(
+	ctx context.Context, req *runtimev1.SaveNoteRequest,
+) (*runtimev1.SaveNoteResponse, error) {
+	if s.notesStore == nil {
+		return nil, status.Error(codes.Unavailable, "notes store not configured")
+	}
+
+	maxBytes := int(req.GetMaxBytes())
+	if maxBytes == 0 {
+		maxBytes = s.notesMaxByte
+	}
+	maxCount := int(req.GetMaxCount())
+	if maxCount == 0 {
+		maxCount = s.notesMaxCnt
+	}
+
+	_, prevErr := s.notesStore.Get(ctx, req.GetKey())
+	overwrote := prevErr == nil
+
+	if err := s.notesStore.Save(ctx, req.GetKey(), req.GetContent(), maxBytes, maxCount); err != nil {
+		switch {
+		case errors.Is(err, notes.ErrInvalidKey):
+			return nil, status.Errorf(codes.InvalidArgument, "%s", err)
+		case errors.Is(err, notes.ErrNoteTooLarge), errors.Is(err, notes.ErrTooManyNotes):
+			return nil, status.Errorf(codes.FailedPrecondition, "%s", err)
+		default:
+			return nil, status.Errorf(codes.Internal, "save note: %s", err)
+		}
+	}
+
+	n, err := s.notesStore.Get(ctx, req.GetKey())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "re-read after save: %s", err)
+	}
+	return &runtimev1.SaveNoteResponse{Note: noteToProto(n, true), Overwrote: overwrote}, nil
+}
+
+func (s *GRPCServer) DeleteNote(
+	ctx context.Context, req *runtimev1.DeleteNoteRequest,
+) (*runtimev1.DeleteNoteResponse, error) {
+	if s.notesStore == nil {
+		return nil, status.Error(codes.Unavailable, "notes store not configured")
+	}
+	_, getErr := s.notesStore.Get(ctx, req.GetKey())
+	existed := getErr == nil
+	if err := s.notesStore.Delete(ctx, req.GetKey()); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete note: %s", err)
+	}
+	return &runtimev1.DeleteNoteResponse{Deleted: existed}, nil
+}
+
+func (s *GRPCServer) SetNoteInContext(
+	ctx context.Context, req *runtimev1.SetNoteInContextRequest,
+) (*runtimev1.SetNoteInContextResponse, error) {
+	if s.notesStore == nil {
+		return nil, status.Error(codes.Unavailable, "notes store not configured")
+	}
+	err := s.notesStore.SetInContext(ctx, req.GetKey(), req.GetInContext())
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, status.Errorf(codes.NotFound, "no note %q", req.GetKey())
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "set in_context: %s", err)
+	}
+	n, err := s.notesStore.Get(ctx, req.GetKey())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "re-read after pin: %s", err)
+	}
+	return &runtimev1.SetNoteInContextResponse{Note: noteToProto(n, true)}, nil
+}
+
+// noteToProto converts a pkg/notes Note into its wire shape. When
+// includeContent is false the body is dropped — keeps list-response
+// payloads bounded since notes can be a few KB each.
+func noteToProto(n notes.Note, includeContent bool) *runtimev1.Note {
+	pn := &runtimev1.Note{
+		Key:       n.Key,
+		Preview:   n.Preview,
+		InContext: n.InContext,
+		CreatedAt: n.CreatedAt.Unix(),
+		UpdatedAt: n.UpdatedAt.Unix(),
+	}
+	if includeContent {
+		pn.Content = n.Content
+	}
+	return pn
 }

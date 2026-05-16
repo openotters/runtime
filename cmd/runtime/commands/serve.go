@@ -44,7 +44,11 @@ func (s *Serve) Run(
 	)
 
 	srv := grpc.NewServer()
-	runtimev1.RegisterAgentRuntimeServer(srv, internal.NewGRPCServer(setup.svc, s.Name, s.Model))
+	runtimev1.RegisterAgentRuntimeServer(srv, internal.NewGRPCServer(
+		setup.svc,
+		setup.notesStore, setup.notesMaxBytes, setup.notesMaxCount,
+		s.Name, s.Model,
+	))
 	reflection.Register(srv)
 
 	lc := net.ListenConfig{}
