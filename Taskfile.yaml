@@ -56,12 +56,12 @@ tasks:
         flags=""; for t in {{.TAGS}}; do flags="$flags -t {{.REGISTRY}}/runtime:$t"; done;
         {{.OTTERS}} bin build -n runtime -d "openotters agent runtime"
         -s "{{.SOURCE | default "https://github.com/openotters/runtime"}}"
-        --version "{{.VERSION}}"
-        --revision "{{.REVISION}}"
-        --licenses "MIT"
-        --vendor "openotters"
-        --url "https://github.com/openotters/runtime"
-        --documentation "https://github.com/openotters/runtime#readme"
+        --image-version "{{.VERSION}}"
+        --image-revision "{{.REVISION}}"
+        --image-licenses "MIT"
+        --image-vendor "openotters"
+        --image-url "https://github.com/openotters/runtime"
+        --image-documentation "https://github.com/openotters/runtime#readme"
         $flags
         darwin/arm64:{{.OUT_DIR}}/runtime-darwin-arm64
         darwin/amd64:{{.OUT_DIR}}/runtime-darwin-amd64
