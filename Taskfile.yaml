@@ -36,6 +36,14 @@ tasks:
       REGISTRY: '{{.REGISTRY | default "ghcr.io/openotters"}}'
       OUT_DIR: '{{.OUT_DIR | default "/tmp/otters-runtime"}}'
       OTTERS: '{{.OTTERS | default "otters"}}'
+      # OCI metadata: --version is the first semver-shaped tag in
+      # TAGS (skipping plain `latest` / floating aliases); --revision
+      # is captured from `git rev-parse HEAD` at task-run time so
+      # every build is traceable back to a commit.
+      VERSION:
+        sh: 'for t in {{.TAGS}}; do case "$t" in v[0-9]*) echo "$t"; exit 0;; esac; done; echo'
+      REVISION:
+        sh: git rev-parse HEAD
     cmds:
       - mkdir -p {{.OUT_DIR}}
       - GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o {{.OUT_DIR}}/runtime-darwin-arm64 ./cmd/runtime
@@ -48,6 +56,12 @@ tasks:
         flags=""; for t in {{.TAGS}}; do flags="$flags -t {{.REGISTRY}}/runtime:$t"; done;
         {{.OTTERS}} bin build -n runtime -d "openotters agent runtime"
         -s "{{.SOURCE | default "https://github.com/openotters/runtime"}}"
+        --version "{{.VERSION}}"
+        --revision "{{.REVISION}}"
+        --licenses "MIT"
+        --vendor "openotters"
+        --url "https://github.com/openotters/runtime"
+        --documentation "https://github.com/openotters/runtime#readme"
         $flags
         darwin/arm64:{{.OUT_DIR}}/runtime-darwin-arm64
         darwin/amd64:{{.OUT_DIR}}/runtime-darwin-amd64
