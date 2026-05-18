@@ -222,9 +222,31 @@ CONSTRAINTS:
 func agentCreateFromSourceTool(c *agentclient.Client) fantasy.AgentTool {
 	desc := `Build a fresh image from an inline Agentfile body, then spawn an agent from it. The daemon tags the generated image under "from-agent-<your-id>:<uuid>" so the provenance is visible in image_list.
 
+AGENTFILE SYNTAX (the exact grammar the daemon parses):
+
+  FROM <ref>                       # required. "scratch" for an empty base.
+  RUNTIME <ref>                    # OCI ref carrying the runtime binary
+  MODEL <provider/model>           # e.g. anthropic-local/claude-opus-4-7
+  NAME <agent-name>                # optional; daemon assigns one otherwise
+
+  LABEL <key>="<value>"            # one per line; quote the value
+
+  CONTEXT <NAME> [<description>] <<EOF
+  ... the SOUL or other context body, any number of lines ...
+  EOF
+
+  BIN <alias> <bin-ref>            # one per BIN — alias is what the model invokes
+  ENV <KEY>=<value>                # optional ENV (uppercase, no PATH/HOME/*_API_KEY)
+
+Heredoc (<<EOF ... EOF) IS supported for CONTEXT bodies — that's how SOUL prompts are passed. The keyword is CONTEXT <NAME>, not bare SOUL. Use CONTEXT SOUL for the operating-rules block.
+
 EXAMPLE:
-  agent_create_from_source({"agentfile":"FROM ghcr.io/openotters/runtime:latest\nMODEL anthropic/claude-sonnet-4-6\nSOUL ./soul.md\nBIN curl\nBIN jq","name":"http-probe","links":["<your-id>"]})
-  → {"id":"...","name":"http-probe","status":"pulling"}
+  agent_create_from_source({
+    "agentfile": "FROM scratch\nRUNTIME ghcr.io/openotters/runtime:latest\nMODEL anthropic-local/claude-opus-4-7\nNAME meteo\n\nCONTEXT SOUL <<EOF\nYou are a weather specialist. Use curl to hit api.open-meteo.com.\nEOF\n\nBIN curl ghcr.io/openotters/tools/curl:latest\nBIN jq ghcr.io/openotters/tools/jq:latest\n",
+    "name": "Meteo",
+    "links": ["<your-id>"]
+  })
+  → {"id":"...","name":"Meteo","status":"pulling"}
 
 USE WHEN:
   • You need a specific BIN combination that no existing image carries — bin_list shows what's available; FROM / BIN refs are resolved against the local registry.
@@ -233,7 +255,7 @@ USE WHEN:
 CONSTRAINTS:
   • The Agentfile body must be self-contained — no COPY-from-host, no file uploads.
   • The generated image persists until the operator removes it. Use agent_delete on the agent when done; the image is the operator's to garbage-collect.
-  • Same field semantics as agent_create otherwise.`
+  • Same field semantics as agent_create otherwise — links is INBOUND; include your own ref + call self_reload to delegate to the new agent.`
 	return fantasy.NewAgentTool(
 		"agent_create_from_source",
 		desc,
