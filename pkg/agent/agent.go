@@ -8,20 +8,37 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/azure"
+	"charm.land/fantasy/providers/bedrock"
+	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"charm.land/fantasy/providers/openrouter"
+	"charm.land/fantasy/providers/vercel"
 	"go.uber.org/zap"
 )
 
 // Provider names recognised by CreateAgent. Centralised so the
-// requiresAPIKey switch and the createProvider switch agree on
-// the same string set, and so goconst / consumers don't have to
-// chase the literal across two cases.
+// requiresAPIKey switch and the createProvider switch agree on the
+// same string set, and so goconst / consumers don't have to chase
+// the literal across two cases.
+//
+// The slugs match Catwalk's provider IDs (catwalk.charm.sh/v2/providers)
+// so that operators can use the catalog's identifier directly when
+// configuring providers.yaml — no aliases-table lookups, no surprises
+// when the catwalk-driven model enrichment kicks in. The one exception
+// is `google` (kept as an alias for `gemini`) because the fantasy
+// package itself is named `google` and Vertex / AI Studio users may
+// reach for that name out of muscle memory.
 const (
 	providerAnthropic  = "anthropic"
 	providerOpenAI     = "openai"
 	providerOpenRouter = "openrouter"
+	providerGemini     = "gemini"
+	providerGoogle     = "google"
+	providerAzure      = "azure"
+	providerBedrock    = "bedrock"
+	providerVercel     = "vercel"
 )
 
 // Config bundles the inputs CreateAgent needs to talk to a provider.
@@ -127,7 +144,14 @@ func CreateAgent(
 
 func requiresAPIKey(provider string) bool {
 	switch provider {
-	case providerAnthropic, providerOpenAI, providerOpenRouter:
+	case providerAnthropic,
+		providerOpenAI,
+		providerOpenRouter,
+		providerGemini,
+		providerGoogle,
+		providerAzure,
+		providerBedrock,
+		providerVercel:
 		return true
 	default:
 		return false
@@ -152,6 +176,40 @@ func createProvider(name, apiKey, apiBase string) (fantasy.Provider, error) {
 		return openai.New(opts...)
 	case providerOpenRouter:
 		return openrouter.New(openrouter.WithAPIKey(apiKey))
+	case providerGemini, providerGoogle:
+		// google's fantasy package uses WithGeminiAPIKey (NOT
+		// WithAPIKey) because the same provider also handles Vertex
+		// AI via WithVertex, and the package keeps the two auth
+		// shapes distinct. WithBaseURL is only meaningful for the
+		// Gemini direct API; Vertex sets its own URL from project +
+		// location and ignores this option.
+		opts := []google.Option{google.WithGeminiAPIKey(apiKey)}
+		if apiBase != "" {
+			opts = append(opts, google.WithBaseURL(apiBase))
+		}
+
+		return google.New(opts...)
+	case providerAzure:
+		opts := []azure.Option{azure.WithAPIKey(apiKey)}
+		if apiBase != "" {
+			opts = append(opts, azure.WithBaseURL(apiBase))
+		}
+
+		return azure.New(opts...)
+	case providerBedrock:
+		opts := []bedrock.Option{bedrock.WithAPIKey(apiKey)}
+		if apiBase != "" {
+			opts = append(opts, bedrock.WithBaseURL(apiBase))
+		}
+
+		return bedrock.New(opts...)
+	case providerVercel:
+		opts := []vercel.Option{vercel.WithAPIKey(apiKey)}
+		if apiBase != "" {
+			opts = append(opts, vercel.WithBaseURL(apiBase))
+		}
+
+		return vercel.New(opts...)
 	default:
 		opts := []openaicompat.Option{
 			openaicompat.WithAPIKey(apiKey),
