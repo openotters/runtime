@@ -1,3 +1,9 @@
+// Tool descriptions are multi-paragraph markdown the model reads in
+// its tool catalogue; breaking the prose at 120 chars with Go string
+// concatenation hurts readability for reviewers and the rendered
+// output the model sees. Same precedent as pkg/tool/agents.go.
+//
+//nolint:lll // tool descriptions cross the 120-char ceiling intentionally.
 package tool
 
 import (
@@ -44,7 +50,7 @@ func BuildNotesTools(store *notes.Store, maxBytes, maxCount int) []fantasy.Agent
 type noteSaveInput struct {
 	Key     string `json:"key"     jsonschema:"description=Note key: [a-z0-9_-], <=64 chars. Re-using overwrites."`
 	Content string `json:"content" jsonschema:"description=Free-form body. Capped by notes-max-bytes-per."`
-	Pin     bool   `json:"pin,omitempty" jsonschema:"description=When true, also pin the note (= note_pin) in one call. Useful before self_reload when you want a breadcrumb visible in your next-turn system prompt without a second tool call."`
+	Pin     bool   `json:"pin,omitempty" jsonschema:"description=When true, also pin (= note_pin) so the note renders in your system prompt on every step."`
 }
 
 type noteKeyInput struct {
@@ -60,9 +66,9 @@ func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool 
 		"forget next time. Re-using a key OVERWRITES the existing note; " +
 		"call note_list first if unsure whether a key is taken.\n\n" +
 		"Pass `pin: true` to save AND pin in one call — the note then " +
-		"renders in your system prompt on every subsequent step. The " +
-		"canonical use is leaving a breadcrumb before self_reload: " +
-		"`note_save({key:\"_pending\",content:\"...\",pin:true})`."
+		"renders in your system prompt on every subsequent step. Use " +
+		"for facts you want visible on every future turn (e.g. \"this " +
+		"user's k8s cluster is named homelab\")."
 	return fantasy.NewAgentTool(
 		"note_save",
 		desc,

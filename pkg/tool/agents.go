@@ -402,23 +402,19 @@ type selfReloadInput struct{}
 func selfReloadTool(c *agentclient.Client) fantasy.AgentTool {
 	desc := `Re-issue your JWT against the current link table and restart your runtime. After agent_create with self-linking, your in-memory token still carries the stale link claim — self_reload is how you pick up the refreshed set.
 
-LEAVE YOURSELF A BREADCRUMB FIRST. self_reload kills the current LLM turn — when you come back, you won't remember being mid-task unless you wrote it down. ALWAYS:
-  1. note_save({key:"_pending", content:"<task to resume>", pin:true}) — saves AND pins in one call, so the note renders in your system prompt on every subsequent step.
-  2. THEN call self_reload.
-  3. On your next user turn, the pinned "_pending" note is visible in your context. Finish the task, then note_delete "_pending" (and note_unpin first) so it doesn't clutter future context.
+NO BREADCRUMB NEEDED. The runtime persists every text delta, tool call, and tool result as it happens — your full in-flight turn state is in the session history before self_reload fires. On the next user message you see the agent_create's response (the new agent's id/name/status) sitting in your context and resume from there directly.
 
 EXAMPLE FLOW:
   Turn N:
     agent_create({"ref":"meteo:latest","name":"Meteo","links":["<your-id-from-AGENT.md-Identity>"]})
     → {"id":"...","name":"Meteo","status":"pulling"}
-    note_save({"key":"_pending","content":"Spawned Meteo for the user's weather question. After reload, agent_exec Meteo with the original prompt.","pin":true})
     self_reload({})
-    → runtime restarts; this turn ENDS abruptly.
+    → runtime restarts; this turn ends. Don't bother emitting a "spawning, reloading…" text — it adds nothing.
   Turn N+1 (next user message):
-    The pinned _pending note is now in your system prompt. Read it. Run agent_exec on Meteo. Reply to the user. note_unpin + note_delete _pending.
+    Your context shows the agent_create result above. Run agent_exec on Meteo with the original task. Reply to the user.
 
 WARNINGS:
-  • This kills the current turn — the runtime process exits mid-call. Any tool result that would have followed is lost. Call self_reload as your LAST tool.
+  • Call self_reload as your LAST tool of the turn. Any tool you'd run after it dies with the runtime; per-event persistence saves what HAPPENED, not what was queued.
   • Don't call self_reload more than once per turn.
   • If you're spawning a leaf worker you don't need to call yourself, skip self_reload entirely.`
 	return fantasy.NewAgentTool(
