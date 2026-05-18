@@ -158,38 +158,28 @@ func (c *Client) AgentInfo(ctx context.Context, ref string) (AgentInfoView, erro
 	}, nil
 }
 
-// AgentChat sends a prompt to the target and blocks until the
+// AgentExec sends a prompt to the target and blocks until the
 // target's turn finishes. sessionID is optional; pass an empty
 // string for a fresh session, or thread the returned id through
-// subsequent calls. Returns (response, returnedSessionID, err).
-func (c *Client) AgentChat(
+// subsequent calls to preserve history on the target. Returns
+// (response, returnedSessionID, err).
+//
+// (agent_chat existed as a separate threaded variant in
+// alpha.82–.84; folded back into AgentExec in alpha.85 — one shape
+// covers both use cases.)
+func (c *Client) AgentExec(
 	ctx context.Context, ref, prompt, sessionID string,
 ) (string, string, error) {
 	if err := c.ensure(); err != nil {
 		return "", "", err
 	}
-	resp, err := c.rt.AgentChat(ctx, &daemonv1.AgentChatRequest{
+	resp, err := c.rt.AgentExec(ctx, &daemonv1.AgentExecRequest{
 		Ref: ref, Prompt: prompt, SessionId: sessionID,
 	})
 	if err != nil {
 		return "", "", err
 	}
 	return resp.GetResponse(), resp.GetSessionId(), nil
-}
-
-// AgentExec is the stateless one-shot variant. No session memory
-// on the target.
-func (c *Client) AgentExec(ctx context.Context, ref, prompt string) (string, error) {
-	if err := c.ensure(); err != nil {
-		return "", err
-	}
-	resp, err := c.rt.AgentExec(ctx, &daemonv1.AgentExecRequest{
-		Ref: ref, Prompt: prompt,
-	})
-	if err != nil {
-		return "", err
-	}
-	return resp.GetResponse(), nil
 }
 
 func agentFromProto(a *daemonv1.LinkedAgent) AgentView {

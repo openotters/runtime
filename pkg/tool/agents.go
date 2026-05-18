@@ -6,19 +6,24 @@
 //nolint:lll // The four tool descriptions below are multi-paragraph
 package tool
 
-// agents.go registers the four LLM-facing agent-to-agent tools:
+// agents.go registers the three LLM-facing agent-to-agent tools:
 //
 //   - agent_list : enumerate agents I'm linked to (= can call)
 //   - agent_info : inspect one linked agent's metadata + caps
-//   - agent_chat : send a prompt to a linked agent and wait for
-//                  the full reply (session-threaded)
-//   - agent_exec : stateless one-shot prompt to a linked agent
+//   - agent_exec : send a prompt to a linked agent and wait for
+//                  the full reply. Pass session_id to preserve
+//                  history on the target across calls; omit it
+//                  for a fresh thread.
 //
-// All four go through the daemon via OTTERSD_URL +
+// All three go through the daemon via OTTERSD_URL +
 // OTTERS_AGENT_TOKEN — the same channel the job tools use. The
 // daemon authorises each call against the JWT's Links claim;
 // trying to call an unlinked agent surfaces as an IsError tool
 // response the model can read.
+//
+// (alpha.85 dropped a separate `agent_chat` tool that did the
+// threaded variant; merged into agent_exec via the new session_id
+// parameter to keep the surface tight.)
 
 import (
 	"context"
@@ -31,11 +36,11 @@ import (
 	"github.com/openotters/runtime/pkg/agentclient"
 )
 
-// BuildAgentTools returns the four agent_* tools when a daemon
+// BuildAgentTools returns the three agent_* tools when a daemon
 // callback path is wired. Empty slice when not — same gating shape
 // the job tools use.
 //
-// One shared *agentclient.Client across all four; the underlying
+// One shared *agentclient.Client across all three; the underlying
 // gRPC connection multiplexes RPCs and lazy-dials on first use.
 func BuildAgentTools() []fantasy.AgentTool {
 	cfg, ok := agentclient.FromEnv()
@@ -47,7 +52,6 @@ func BuildAgentTools() []fantasy.AgentTool {
 	return []fantasy.AgentTool{
 		agentListTool(client),
 		agentInfoTool(client),
-		agentChatTool(client),
 		agentExecTool(client),
 	}
 }
@@ -135,60 +139,25 @@ Errors with PermissionDenied if the ref isn't in your link set.`
 	)
 }
 
-func agentChatTool(c *agentclient.Client) fantasy.AgentTool {
-	desc := `**Delegate a request to a linked agent and wait for its full reply.** The target sees your prompt as a single user turn — the conversation is real, with memory: pass back the returned session_id to thread follow-ups in the same logical thread.
-
-WHEN TO USE:
-  • The user asked for something outside your specialty AND a linked agent owns it (check agent_list / agent_info).
-  • You need multi-turn collaboration (you ask a question, get a clarifying answer, then send a follow-up).
-
-BLOCKING. This tool returns when the target finishes its turn. For multi-step targets that take minutes, consider whether agent_exec (stateless one-shot) is the right shape instead.
-
-EXAMPLE:
-  agent_chat({"ref":"Homelab", "prompt":"List namespaces in the kube-system tier"})
-  → {"response":"...", "session_id":"abc-123"}
-
-  Follow up in the same thread:
-  agent_chat({"ref":"Homelab", "prompt":"How many pods in those?", "session_id":"abc-123"})
-
-Errors with PermissionDenied if ref isn't in your link set.`
-	return fantasy.NewAgentTool(
-		"agent_chat",
-		desc,
-		func(ctx context.Context, in agentChatInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			ref := strings.TrimSpace(in.Ref)
-			if ref == "" || strings.TrimSpace(in.Prompt) == "" {
-				return fantasy.ToolResponse{
-					IsError: true,
-					Content: "ref and prompt are both required",
-				}, nil
-			}
-			resp, sessionID, err := c.AgentChat(ctx, ref, in.Prompt, in.SessionID)
-			if err != nil {
-				return errToolResp(err)
-			}
-			payload, err := json.Marshal(struct {
-				Response  string `json:"response"`
-				SessionID string `json:"session_id"`
-			}{Response: resp, SessionID: sessionID})
-			if err != nil {
-				return errToolResp(err)
-			}
-			return fantasy.ToolResponse{Content: string(payload)}, nil
-		},
-	)
-}
-
 func agentExecTool(c *agentclient.Client) fantasy.AgentTool {
-	desc := `Send a stateless one-shot prompt to a linked agent and get its reply. No session memory on the target — every agent_exec call to the same ref starts fresh.
+	desc := `**Delegate a request to a linked agent and wait for its full reply.** The target sees your prompt as a single user turn and persists it.
 
-WHEN TO USE vs agent_chat:
-  • The task is single-turn and standalone (no follow-up planned).
-  • You don't want to pollute the target's chat history with this one-off question.
+EXAMPLE — fresh thread:
+  agent_exec({"ref":"Homelab", "prompt":"List namespaces in the kube-system tier"})
+  → {"response":"...", "session_id":"from-agent:<your-id>:abc-123"}
 
-WHEN TO USE agent_chat instead:
-  • You expect to ask a follow-up.
-  • The target's value depends on memory of prior turns.
+EXAMPLE — continue an existing thread (preserve history on the target):
+  agent_exec({"ref":"Homelab", "prompt":"How many pods in each?", "session_id":"from-agent:<your-id>:abc-123"})
+
+WHEN TO PASS session_id:
+  • The follow-up depends on what you asked before (you don't want to re-state the context).
+  • You're orchestrating a multi-turn collaboration with the same target.
+
+WHEN TO OMIT session_id:
+  • The task is single-turn and standalone.
+  • You explicitly want a fresh conversational state on the target.
+
+BLOCKING. This tool returns when the target finishes its turn.
 
 Errors with PermissionDenied if ref isn't in your link set.`
 	return fantasy.NewAgentTool(
@@ -202,11 +171,18 @@ Errors with PermissionDenied if ref isn't in your link set.`
 					Content: "ref and prompt are both required",
 				}, nil
 			}
-			resp, err := c.AgentExec(ctx, ref, in.Prompt)
+			resp, sessionID, err := c.AgentExec(ctx, ref, in.Prompt, in.SessionID)
 			if err != nil {
 				return errToolResp(err)
 			}
-			return fantasy.ToolResponse{Content: resp}, nil
+			payload, err := json.Marshal(struct {
+				Response  string `json:"response"`
+				SessionID string `json:"session_id"`
+			}{Response: resp, SessionID: sessionID})
+			if err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: string(payload)}, nil
 		},
 	)
 }
