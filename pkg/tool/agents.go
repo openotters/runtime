@@ -58,6 +58,7 @@ func BuildAgentTools() []fantasy.AgentTool {
 		agentDeleteTool(client),
 		imageListTool(client),
 		binListTool(client),
+		modelListTool(client),
 		selfReloadTool(client),
 	}
 }
@@ -224,7 +225,7 @@ func agentCreateFromSourceTool(c *agentclient.Client) fantasy.AgentTool {
 
 AGENTFILE SYNTAX (the exact grammar the daemon parses):
 
-  FROM <ref>                       # required. "scratch" for an empty base.
+  FROM <ref>                       # required. Literally "FROM scratch" for an empty base (no parent layer); the resolver short-circuits scratch and never tries to fetch it.
   RUNTIME <ref>                    # OCI ref carrying the runtime binary
   MODEL <provider/model>           # e.g. anthropic-local/claude-opus-4-7
   NAME <agent-name>                # optional; daemon assigns one otherwise
@@ -240,13 +241,15 @@ AGENTFILE SYNTAX (the exact grammar the daemon parses):
 
 Heredoc (<<EOF ... EOF) IS supported for CONTEXT bodies — that's how SOUL prompts are passed. The keyword is CONTEXT <NAME>, not bare SOUL. Use CONTEXT SOUL for the operating-rules block.
 
-EXAMPLE:
+EXAMPLE (start from scratch — typical case for a one-off):
   agent_create_from_source({
     "agentfile": "FROM scratch\nRUNTIME ghcr.io/openotters/runtime:latest\nMODEL anthropic-local/claude-opus-4-7\nNAME meteo\n\nCONTEXT SOUL <<EOF\nYou are a weather specialist. Use curl to hit api.open-meteo.com.\nEOF\n\nBIN curl ghcr.io/openotters/tools/curl:latest\nBIN jq ghcr.io/openotters/tools/jq:latest\n",
     "name": "Meteo",
-    "links": ["<your-id>"]
+    "links": ["<your-id-from-AGENT.md-Identity>"]
   })
   → {"id":"...","name":"Meteo","status":"pulling"}
+
+The "FROM scratch" line is literal — the daemon resolver treats "scratch" as a special token (no parent fetch). Don't substitute another base unless you actually want inheritance. Look up the MODEL ref via model_list and your own id in your AGENT.md Identity section.
 
 USE WHEN:
   • You need a specific BIN combination that no existing image carries — bin_list shows what's available; FROM / BIN refs are resolved against the local registry.
@@ -350,20 +353,69 @@ EXAMPLE OUTPUT:
 	)
 }
 
+type modelListInput struct{}
+
+func modelListTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `List the LLM models the daemon's configured providers advertise. Use this BEFORE agent_create_from_source to pick a MODEL ref the daemon can actually resolve.
+
+EXAMPLE OUTPUT:
+  | Ref | Display | Context | Reasoning |
+  |-----|---------|---------|-----------|
+  | anthropic/claude-opus-4-7 | Claude Opus 4.7 | 200000 | yes |
+  | anthropic-local/claude-haiku-4-5 | Claude Haiku 4.5 | 200000 | no |
+
+The "ref" column is what you put after MODEL in an Agentfile. If a model you expect isn't listed, the operator hasn't configured that provider yet — don't fabricate one; pick from what's available or surface that constraint to the user.`
+	return fantasy.NewAgentTool(
+		"model_list",
+		desc,
+		func(ctx context.Context, _ modelListInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			models, err := c.ModelList(ctx)
+			if err != nil {
+				return errToolResp(err)
+			}
+			if len(models) == 0 {
+				return fantasy.ToolResponse{
+					Content: "No models advertised. The operator has not configured any providers yet.",
+				}, nil
+			}
+			var b strings.Builder
+			b.WriteString("| Ref | Display | Context | Reasoning |\n")
+			b.WriteString("|-----|---------|---------|-----------|\n")
+			for _, m := range models {
+				disp := m.DisplayName
+				if disp == "" {
+					disp = "-"
+				}
+				reason := "no"
+				if m.CanReason {
+					reason = "yes"
+				}
+				fmt.Fprintf(&b, "| `%s` | %s | %d | %s |\n", m.Ref, disp, m.ContextWindow, reason)
+			}
+			return fantasy.ToolResponse{Content: b.String()}, nil
+		},
+	)
+}
+
 type selfReloadInput struct{}
 
 func selfReloadTool(c *agentclient.Client) fantasy.AgentTool {
 	desc := `Re-issue your JWT against the current link table and restart your runtime. After agent_create with self-linking, your in-memory token still carries the stale link claim — self_reload is how you pick up the refreshed set.
 
+LEAVE YOURSELF A BREADCRUMB FIRST. self_reload kills the current LLM turn — when you come back, you won't remember being mid-task unless you wrote it down. ALWAYS:
+  1. note_save({key:"_pending", content:"<task to resume>", pin:true}) — saves AND pins in one call, so the note renders in your system prompt on every subsequent step.
+  2. THEN call self_reload.
+  3. On your next user turn, the pinned "_pending" note is visible in your context. Finish the task, then note_delete "_pending" (and note_unpin first) so it doesn't clutter future context.
+
 EXAMPLE FLOW:
   Turn N:
-    agent_create({"ref":"meteo:latest","name":"Meteo","links":["<your-id>"]})
+    agent_create({"ref":"meteo:latest","name":"Meteo","links":["<your-id-from-AGENT.md-Identity>"]})
     → {"id":"...","name":"Meteo","status":"pulling"}
+    note_save({"key":"_pending","content":"Spawned Meteo for the user's weather question. After reload, agent_exec Meteo with the original prompt.","pin":true})
     self_reload({})
     → runtime restarts; this turn ENDS abruptly.
   Turn N+1 (next user message):
-    agent_list → Meteo now appears.
-    agent_exec({"ref":"Meteo", ...})
+    The pinned _pending note is now in your system prompt. Read it. Run agent_exec on Meteo. Reply to the user. note_unpin + note_delete _pending.
 
 WARNINGS:
   • This kills the current turn — the runtime process exits mid-call. Any tool result that would have followed is lost. Call self_reload as your LAST tool.

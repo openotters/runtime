@@ -316,6 +316,43 @@ func (c *Client) SelfReload(ctx context.Context) (bool, error) {
 	return resp.GetRestarted(), nil
 }
 
+// ModelView is the trimmed projection of one daemon-known model.
+// Mirrors daemonv1.Model with the most useful fields for picking
+// a MODEL when building an Agentfile from source.
+type ModelView struct {
+	Provider      string `json:"provider"`
+	Name          string `json:"name"`
+	Ref           string `json:"ref"`
+	DisplayName   string `json:"display_name,omitempty"`
+	ContextWindow int64  `json:"context_window,omitempty"`
+	CanReason     bool   `json:"can_reason,omitempty"`
+}
+
+// ModelList returns the LLM models the daemon's configured
+// providers advertise. Same data ListModels surfaces to the
+// operator CLI; agents reach it through the same RPC.
+func (c *Client) ModelList(ctx context.Context) ([]ModelView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+	resp, err := c.rt.ListModels(ctx, &daemonv1.ListModelsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModelView, 0, len(resp.GetModels()))
+	for _, m := range resp.GetModels() {
+		out = append(out, ModelView{
+			Provider:      m.GetProvider(),
+			Name:          m.GetName(),
+			Ref:           m.GetRef(),
+			DisplayName:   m.GetDisplayName(),
+			ContextWindow: m.GetContextWindow(),
+			CanReason:     m.GetCanReason(),
+		})
+	}
+	return out, nil
+}
+
 // BinList returns the BIN-image catalogue.
 func (c *Client) BinList(ctx context.Context) ([]ImageRowView, error) {
 	if err := c.ensure(); err != nil {

@@ -44,6 +44,7 @@ func BuildNotesTools(store *notes.Store, maxBytes, maxCount int) []fantasy.Agent
 type noteSaveInput struct {
 	Key     string `json:"key"     jsonschema:"description=Note key: [a-z0-9_-], <=64 chars. Re-using overwrites."`
 	Content string `json:"content" jsonschema:"description=Free-form body. Capped by notes-max-bytes-per."`
+	Pin     bool   `json:"pin,omitempty" jsonschema:"description=When true, also pin the note (= note_pin) in one call. Useful before self_reload when you want a breadcrumb visible in your next-turn system prompt without a second tool call."`
 }
 
 type noteKeyInput struct {
@@ -57,7 +58,11 @@ func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool 
 		"you'll want to recall in a future session. Notes persist across " +
 		"sessions; chat history does not. If you don't save now, you'll " +
 		"forget next time. Re-using a key OVERWRITES the existing note; " +
-		"call note_list first if unsure whether a key is taken."
+		"call note_list first if unsure whether a key is taken.\n\n" +
+		"Pass `pin: true` to save AND pin in one call — the note then " +
+		"renders in your system prompt on every subsequent step. The " +
+		"canonical use is leaving a breadcrumb before self_reload: " +
+		"`note_save({key:\"_pending\",content:\"...\",pin:true})`."
 	return fantasy.NewAgentTool(
 		"note_save",
 		desc,
@@ -82,13 +87,27 @@ func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool 
 				return errToolResp(err)
 			}
 
+			// Pin in the same call. SetInContext is idempotent —
+			// re-pinning a pinned note is a no-op. Treat a pin
+			// failure as a hard error: the model asked for it
+			// explicitly, so silently dropping it would surprise.
+			if in.Pin {
+				if err := store.SetInContext(ctx, key, true); err != nil {
+					return errToolResp(err)
+				}
+			}
+
+			pinSuffix := ""
+			if in.Pin {
+				pinSuffix = " (pinned)"
+			}
 			if existed {
 				return fantasy.ToolResponse{
-					Content: fmt.Sprintf("saved (overwrote prior version of %q)", key),
+					Content: fmt.Sprintf("saved (overwrote prior version of %q)%s", key, pinSuffix),
 				}, nil
 			}
 			return fantasy.ToolResponse{
-				Content: fmt.Sprintf("saved (new key %q)", key),
+				Content: fmt.Sprintf("saved (new key %q)%s", key, pinSuffix),
 			}, nil
 		},
 	)
