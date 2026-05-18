@@ -53,6 +53,11 @@ func BuildAgentTools() []fantasy.AgentTool {
 		agentListTool(client),
 		agentInfoTool(client),
 		agentExecTool(client),
+		agentCreateTool(client),
+		agentCreateFromSourceTool(client),
+		agentDeleteTool(client),
+		imageListTool(client),
+		binListTool(client),
 	}
 }
 
@@ -135,6 +140,224 @@ Errors with PermissionDenied if the ref isn't in your link set.`
 				return errToolResp(err)
 			}
 			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+// agentCreateInput mirrors agentclient.AgentCreateInput on the wire
+// so the JSON schema fantasy generates surfaces field-by-field
+// descriptions to the model. Same shape, jsonschema tags added.
+type agentCreateInput struct {
+	Ref         string            `json:"ref" jsonschema:"description=Image ref to spawn from (e.g. kubectl:latest). Use image_list to discover available refs."`
+	Name        string            `json:"name,omitempty" jsonschema:"description=Optional name for the new agent. Daemon auto-generates one if empty."`
+	Model       string            `json:"model,omitempty" jsonschema:"description=Optional model override (e.g. anthropic/claude-opus-4-7). Falls back to the image's MODEL directive."`
+	Envs        map[string]string `json:"envs,omitempty" jsonschema:"description=Per-run ENV overrides. Reserved keys (PATH, HOME, *_API_KEY) are rejected by the daemon."`
+	Links       []string          `json:"links,omitempty" jsonschema:"description=Agent refs to stamp into the new agent's outbound link set. Include yourself here if you intend to call the new agent — without this you can spawn it but not delegate to it."`
+	Description string            `json:"description,omitempty" jsonschema:"description=One-line description shown to the operator + future callers. Stored as the description label."`
+}
+
+type agentCreateFromSourceInput struct {
+	Agentfile   string            `json:"agentfile" jsonschema:"description=Raw Agentfile body (FROM / MODEL / SOUL / BIN / ENV / etc.). Must be self-contained — no COPY-from-host."`
+	Name        string            `json:"name,omitempty" jsonschema:"description=Optional name for the new agent."`
+	Model       string            `json:"model,omitempty" jsonschema:"description=Optional model override."`
+	Envs        map[string]string `json:"envs,omitempty" jsonschema:"description=Per-run ENV overrides."`
+	Links       []string          `json:"links,omitempty" jsonschema:"description=Agent refs to stamp into the new agent's outbound link set."`
+	Description string            `json:"description,omitempty" jsonschema:"description=One-line description."`
+}
+
+// agentCreateTool and agentCreateFromSourceTool deliberately share
+// the same validate / call / marshal skeleton — the input type and
+// the client method are what differ. Collapsing them into a generic
+// helper would obscure the fact that the daemon enforces two
+// different capabilities behind these tools.
+//
+//nolint:dupl // shape parallel is intentional; see comment above.
+func agentCreateTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Spawn a new agent from an existing image ref. Returns id / name / status.
+
+EXAMPLE:
+  agent_create({"ref":"kubectl:latest","name":"scratch-kube","description":"one-off namespace scan","links":["<your-id>"]})
+  → {"id":"...","name":"scratch-kube","status":"pulling"}
+
+WORKFLOW — when you want to delegate to a freshly-spawned agent:
+  1. image_list → find a ref that fits.
+  2. agent_create with links=[<your-id>] so you can call the new agent immediately.
+  3. agent_exec({"ref":"<new-name>", ...}) to send the actual task.
+  4. agent_delete when you're done (the new agent doesn't clean itself up).
+
+CONSTRAINTS:
+  • Mounts are not supported — host filesystem access stays operator-only.
+  • For an image that doesn't exist yet, use agent_create_from_source with an Agentfile body.
+
+If you don't include yourself in links, you'll spawn an agent you can't delegate to — useful only if a third party (the operator, another orchestrator) will pick it up.`
+	return fantasy.NewAgentTool(
+		"agent_create",
+		desc,
+		func(ctx context.Context, in agentCreateInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if strings.TrimSpace(in.Ref) == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "ref is required (call image_list to see available agent images)",
+				}, nil
+			}
+			res, err := c.AgentCreate(ctx, agentclient.AgentCreateInput{
+				Ref: in.Ref, Name: in.Name, Model: in.Model,
+				Envs: in.Envs, Links: in.Links, Description: in.Description,
+			})
+			if err != nil {
+				return errToolResp(err)
+			}
+			payload, err := json.Marshal(res)
+			if err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+//nolint:dupl // shape parallel with agentCreateTool is intentional.
+func agentCreateFromSourceTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Build a fresh image from an inline Agentfile body, then spawn an agent from it. The daemon tags the generated image under "from-agent-<your-id>:<uuid>" so the provenance is visible in image_list.
+
+EXAMPLE:
+  agent_create_from_source({"agentfile":"FROM ghcr.io/openotters/runtime:latest\nMODEL anthropic/claude-sonnet-4-6\nSOUL ./soul.md\nBIN curl\nBIN jq","name":"http-probe","links":["<your-id>"]})
+  → {"id":"...","name":"http-probe","status":"pulling"}
+
+USE WHEN:
+  • You need a specific BIN combination that no existing image carries — bin_list shows what's available; FROM / BIN refs are resolved against the local registry.
+  • You're composing a one-off specialist for a specific task and don't want to publish a reusable image.
+
+CONSTRAINTS:
+  • The Agentfile body must be self-contained — no COPY-from-host, no file uploads.
+  • The generated image persists until the operator removes it. Use agent_delete on the agent when done; the image is the operator's to garbage-collect.
+  • Same field semantics as agent_create otherwise.`
+	return fantasy.NewAgentTool(
+		"agent_create_from_source",
+		desc,
+		func(ctx context.Context, in agentCreateFromSourceInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if strings.TrimSpace(in.Agentfile) == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "agentfile body is required",
+				}, nil
+			}
+			res, err := c.AgentCreateFromSource(ctx, agentclient.AgentCreateFromSourceInput{
+				Agentfile: in.Agentfile, Name: in.Name, Model: in.Model,
+				Envs: in.Envs, Links: in.Links, Description: in.Description,
+			})
+			if err != nil {
+				return errToolResp(err)
+			}
+			payload, err := json.Marshal(res)
+			if err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+func agentDeleteTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Delete an agent by name or id. Returns silently on success.
+
+NO PERMISSION CHECK: any agent can be deleted, including operator-created ones. Use with discipline:
+  • Default to deleting only agents you yourself spawned via agent_create / agent_create_from_source.
+  • Never delete an operator-created agent without an explicit instruction from the operator.
+
+EXAMPLE:
+  agent_delete({"ref":"scratch-kube"})
+
+Self-delete is allowed at the RPC layer but pointless — you'd lose access to the daemon on your next call.`
+	return fantasy.NewAgentTool(
+		"agent_delete",
+		desc,
+		func(ctx context.Context, in agentRefInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			ref := strings.TrimSpace(in.Ref)
+			if ref == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "ref is required",
+				}, nil
+			}
+			if err := c.AgentDelete(ctx, ref); err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: "deleted " + ref}, nil
+		},
+	)
+}
+
+// imageListInput / binListInput are empty — both tools return the
+// full catalogue. Filtering is up to the model.
+type imageListInput struct{}
+
+func imageListTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `List the agent images available locally. Returns ref / digest / description / size for each.
+
+Use BEFORE agent_create to pick a base image. The "ref" column is what you pass as agent_create's ref field.
+
+EXAMPLE OUTPUT:
+  | Ref | Description | Size |
+  |-----|-------------|------|
+  | kubectl:latest | Kubernetes admin agent | 124MB |
+  | ghcr.io/openotters/agents/web-summarizer:latest | Summarize a web page | 87MB |`
+	return fantasy.NewAgentTool(
+		"image_list",
+		desc,
+		func(ctx context.Context, _ imageListInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			images, err := c.ImageList(ctx)
+			if err != nil {
+				return errToolResp(err)
+			}
+			if len(images) == 0 {
+				return fantasy.ToolResponse{
+					Content: "No agent images are available locally. The operator hasn't built or pulled any yet.",
+				}, nil
+			}
+			var b strings.Builder
+			b.WriteString("| Ref | Description | Size |\n")
+			b.WriteString("|-----|-------------|------|\n")
+			for _, img := range images {
+				fmt.Fprintf(&b, "| `%s` | %s | %d |\n", img.Ref, img.Description, img.Size)
+			}
+			return fantasy.ToolResponse{Content: b.String()}, nil
+		},
+	)
+}
+
+func binListTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `List the BIN images available locally. Returns ref / digest / description / size for each.
+
+Use this when composing an Agentfile for agent_create_from_source — every BIN directive must reference an available BIN image. The "ref" column is what you put after BIN in your Agentfile body.
+
+EXAMPLE — composing an Agentfile that needs curl + jq:
+  1. bin_list → confirm curl:latest and jq:latest are both present.
+  2. agent_create_from_source with body:
+       FROM ghcr.io/openotters/runtime:latest
+       MODEL anthropic/claude-sonnet-4-6
+       BIN curl:latest
+       BIN jq:latest`
+	return fantasy.NewAgentTool(
+		"bin_list",
+		desc,
+		func(ctx context.Context, _ imageListInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			bins, err := c.BinList(ctx)
+			if err != nil {
+				return errToolResp(err)
+			}
+			if len(bins) == 0 {
+				return fantasy.ToolResponse{
+					Content: "No BIN images are available locally.",
+				}, nil
+			}
+			var b strings.Builder
+			b.WriteString("| Ref | Description | Size |\n")
+			b.WriteString("|-----|-------------|------|\n")
+			for _, bn := range bins {
+				fmt.Fprintf(&b, "| `%s` | %s | %d |\n", bn.Ref, bn.Description, bn.Size)
+			}
+			return fantasy.ToolResponse{Content: b.String()}, nil
 		},
 	)
 }

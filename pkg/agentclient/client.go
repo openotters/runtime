@@ -182,6 +182,154 @@ func (c *Client) AgentExec(
 	return resp.GetResponse(), resp.GetSessionId(), nil
 }
 
+// AgentCreateInput mirrors the proto AgentCreateRequest so the tool
+// layer can pass typed values without re-importing daemonv1.
+type AgentCreateInput struct {
+	Ref         string            `json:"ref"`
+	Name        string            `json:"name,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Envs        map[string]string `json:"envs,omitempty"`
+	Links       []string          `json:"links,omitempty"`
+	Description string            `json:"description,omitempty"`
+}
+
+// AgentCreateFromSourceInput carries an inline Agentfile body (utf-8
+// text) in place of a ref. All other fields mirror AgentCreateInput.
+type AgentCreateFromSourceInput struct {
+	Agentfile   string            `json:"agentfile"`
+	Name        string            `json:"name,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Envs        map[string]string `json:"envs,omitempty"`
+	Links       []string          `json:"links,omitempty"`
+	Description string            `json:"description,omitempty"`
+}
+
+// AgentCreateResult is the trimmed daemon response surfaced to the
+// LLM — id, name, status. Enough for the tool result; the caller
+// follows up with agent_info / agent_exec when it needs more.
+type AgentCreateResult struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// ImageRowView mirrors the proto ImageRow for image_list / bin_list
+// tool responses.
+type ImageRowView struct {
+	Ref         string `json:"ref"`
+	Digest      string `json:"digest"`
+	Description string `json:"description,omitempty"`
+	Size        int64  `json:"size"`
+}
+
+// AgentCreate spawns a new agent from an existing image ref.
+// Equivalent to the operator's `otters run <ref>` flow but mounts
+// aren't supported — that surface stays operator-only.
+func (c *Client) AgentCreate(ctx context.Context, in AgentCreateInput) (AgentCreateResult, error) {
+	if err := c.ensure(); err != nil {
+		return AgentCreateResult{}, err
+	}
+	resp, err := c.rt.AgentCreate(ctx, &daemonv1.AgentCreateRequest{
+		Ref:         in.Ref,
+		Name:        in.Name,
+		Model:       in.Model,
+		Envs:        envsToProto(in.Envs),
+		Links:       in.Links,
+		Description: in.Description,
+	})
+	if err != nil {
+		return AgentCreateResult{}, err
+	}
+	return AgentCreateResult{
+		ID: resp.GetId(), Name: resp.GetName(), Status: resp.GetStatus(),
+	}, nil
+}
+
+// AgentCreateFromSource builds a fresh image from the inline
+// Agentfile body and spawns an agent from it. The daemon tags the
+// generated image with a recognizable `from-agent-<creator>:...`
+// prefix so image_list can surface provenance.
+func (c *Client) AgentCreateFromSource(
+	ctx context.Context, in AgentCreateFromSourceInput,
+) (AgentCreateResult, error) {
+	if err := c.ensure(); err != nil {
+		return AgentCreateResult{}, err
+	}
+	resp, err := c.rt.AgentCreateFromSource(ctx, &daemonv1.AgentCreateFromSourceRequest{
+		Agentfile:   []byte(in.Agentfile),
+		Name:        in.Name,
+		Model:       in.Model,
+		Envs:        envsToProto(in.Envs),
+		Links:       in.Links,
+		Description: in.Description,
+	})
+	if err != nil {
+		return AgentCreateResult{}, err
+	}
+	return AgentCreateResult{
+		ID: resp.GetId(), Name: resp.GetName(), Status: resp.GetStatus(),
+	}, nil
+}
+
+// AgentDelete removes an agent by ref. No creator-scope filter — any
+// authenticated agent caller can delete any target.
+func (c *Client) AgentDelete(ctx context.Context, ref string) error {
+	if err := c.ensure(); err != nil {
+		return err
+	}
+	_, err := c.rt.AgentDelete(ctx, &daemonv1.AgentDeleteRequest{Ref: ref})
+	return err
+}
+
+// ImageList returns the agent-image catalogue.
+func (c *Client) ImageList(ctx context.Context) ([]ImageRowView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+	resp, err := c.rt.ImageList(ctx, &daemonv1.ImageListRequest{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ImageRowView, 0, len(resp.GetImages()))
+	for _, r := range resp.GetImages() {
+		out = append(out, ImageRowView{
+			Ref: r.GetRef(), Digest: r.GetDigest(),
+			Description: r.GetDescription(), Size: r.GetSize(),
+		})
+	}
+	return out, nil
+}
+
+// BinList returns the BIN-image catalogue.
+func (c *Client) BinList(ctx context.Context) ([]ImageRowView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+	resp, err := c.rt.BinList(ctx, &daemonv1.BinListRequest{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ImageRowView, 0, len(resp.GetBins()))
+	for _, r := range resp.GetBins() {
+		out = append(out, ImageRowView{
+			Ref: r.GetRef(), Digest: r.GetDigest(),
+			Description: r.GetDescription(), Size: r.GetSize(),
+		})
+	}
+	return out, nil
+}
+
+func envsToProto(envs map[string]string) []*daemonv1.EnvOverride {
+	if len(envs) == 0 {
+		return nil
+	}
+	out := make([]*daemonv1.EnvOverride, 0, len(envs))
+	for k, v := range envs {
+		out = append(out, &daemonv1.EnvOverride{Key: k, Value: v})
+	}
+	return out
+}
+
 func agentFromProto(a *daemonv1.LinkedAgent) AgentView {
 	if a == nil {
 		return AgentView{}
