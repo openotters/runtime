@@ -300,6 +300,22 @@ func (c *Client) ImageList(ctx context.Context) ([]ImageRowView, error) {
 	return out, nil
 }
 
+// SelfReload re-issues the caller's JWT against the current link
+// table and bounces the runtime. Side effect: kills the current
+// LLM turn — the runtime process restarts, the in-flight RPC
+// connection closes mid-response. Use as the last tool of a
+// turn after agent_create with self-linking.
+func (c *Client) SelfReload(ctx context.Context) (bool, error) {
+	if err := c.ensure(); err != nil {
+		return false, err
+	}
+	resp, err := c.rt.SelfReload(ctx, &daemonv1.SelfReloadRequest{})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetRestarted(), nil
+}
+
 // BinList returns the BIN-image catalogue.
 func (c *Client) BinList(ctx context.Context) ([]ImageRowView, error) {
 	if err := c.ensure(); err != nil {

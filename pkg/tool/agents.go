@@ -58,6 +58,7 @@ func BuildAgentTools() []fantasy.AgentTool {
 		agentDeleteTool(client),
 		imageListTool(client),
 		binListTool(client),
+		selfReloadTool(client),
 	}
 }
 
@@ -152,7 +153,7 @@ type agentCreateInput struct {
 	Name        string            `json:"name,omitempty" jsonschema:"description=Optional name for the new agent. Daemon auto-generates one if empty."`
 	Model       string            `json:"model,omitempty" jsonschema:"description=Optional model override (e.g. anthropic/claude-opus-4-7). Falls back to the image's MODEL directive."`
 	Envs        map[string]string `json:"envs,omitempty" jsonschema:"description=Per-run ENV overrides. Reserved keys (PATH, HOME, *_API_KEY) are rejected by the daemon."`
-	Links       []string          `json:"links,omitempty" jsonschema:"description=Agent refs to stamp into the new agent's outbound link set. Include yourself here if you intend to call the new agent — without this you can spawn it but not delegate to it."`
+	Links       []string          `json:"links,omitempty" jsonschema:"description=INBOUND links to the new agent — each entry is an agent ref (id or name) that can call the new agent. Include your own ref to gain call permission yourself, then call self_reload to refresh your JWT."`
 	Description string            `json:"description,omitempty" jsonschema:"description=One-line description shown to the operator + future callers. Stored as the description label."`
 }
 
@@ -161,7 +162,7 @@ type agentCreateFromSourceInput struct {
 	Name        string            `json:"name,omitempty" jsonschema:"description=Optional name for the new agent."`
 	Model       string            `json:"model,omitempty" jsonschema:"description=Optional model override."`
 	Envs        map[string]string `json:"envs,omitempty" jsonschema:"description=Per-run ENV overrides."`
-	Links       []string          `json:"links,omitempty" jsonschema:"description=Agent refs to stamp into the new agent's outbound link set."`
+	Links       []string          `json:"links,omitempty" jsonschema:"description=INBOUND links — same semantics as agent_create.links."`
 	Description string            `json:"description,omitempty" jsonschema:"description=One-line description."`
 }
 
@@ -181,15 +182,16 @@ EXAMPLE:
 
 WORKFLOW — when you want to delegate to a freshly-spawned agent:
   1. image_list → find a ref that fits.
-  2. agent_create with links=[<your-id>] so you can call the new agent immediately.
-  3. agent_exec({"ref":"<new-name>", ...}) to send the actual task.
-  4. agent_delete when you're done (the new agent doesn't clean itself up).
+  2. agent_create with links=[<your-id>] so YOU gain call permission on the new agent.
+  3. self_reload as the LAST tool of THIS turn — your in-memory JWT still carries the pre-link claim set; this restarts your runtime so the new link takes effect.
+  4. On a later turn: agent_exec({"ref":"<new-name>", ...}) to send the actual task. The new agent is now callable.
+  5. agent_delete when the task is done.
+
+LINKS ARE INBOUND. Each ref in "links" is a SOURCE that gains permission to call the new agent (not the other way around). If you don't include your own ref, you spawn an agent you can't delegate to.
 
 CONSTRAINTS:
   • Mounts are not supported — host filesystem access stays operator-only.
-  • For an image that doesn't exist yet, use agent_create_from_source with an Agentfile body.
-
-If you don't include yourself in links, you'll spawn an agent you can't delegate to — useful only if a third party (the operator, another orchestrator) will pick it up.`
+  • For an image that doesn't exist yet, use agent_create_from_source with an Agentfile body.`
 	return fantasy.NewAgentTool(
 		"agent_create",
 		desc,
@@ -322,6 +324,45 @@ EXAMPLE OUTPUT:
 				fmt.Fprintf(&b, "| `%s` | %s | %d |\n", img.Ref, img.Description, img.Size)
 			}
 			return fantasy.ToolResponse{Content: b.String()}, nil
+		},
+	)
+}
+
+type selfReloadInput struct{}
+
+func selfReloadTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Re-issue your JWT against the current link table and restart your runtime. After agent_create with self-linking, your in-memory token still carries the stale link claim — self_reload is how you pick up the refreshed set.
+
+EXAMPLE FLOW:
+  Turn N:
+    agent_create({"ref":"meteo:latest","name":"Meteo","links":["<your-id>"]})
+    → {"id":"...","name":"Meteo","status":"pulling"}
+    self_reload({})
+    → runtime restarts; this turn ENDS abruptly.
+  Turn N+1 (next user message):
+    agent_list → Meteo now appears.
+    agent_exec({"ref":"Meteo", ...})
+
+WARNINGS:
+  • This kills the current turn — the runtime process exits mid-call. Any tool result that would have followed is lost. Call self_reload as your LAST tool.
+  • Don't call self_reload more than once per turn.
+  • If you're spawning a leaf worker you don't need to call yourself, skip self_reload entirely.`
+	return fantasy.NewAgentTool(
+		"self_reload",
+		desc,
+		func(ctx context.Context, _ selfReloadInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			restarted, err := c.SelfReload(ctx)
+			if err != nil {
+				return errToolResp(err)
+			}
+			if restarted {
+				return fantasy.ToolResponse{
+					Content: "self_reload requested; runtime is restarting. This turn ends here.",
+				}, nil
+			}
+			return fantasy.ToolResponse{
+				Content: "self_reload completed; no restart was required.",
+			}, nil
 		},
 	)
 }
