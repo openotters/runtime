@@ -81,6 +81,15 @@ func LoadTools(
 		logger.Info("daemon-job tools registered", zap.Int("count", len(jobTools)))
 	}
 
+	// Agent-to-agent linking tools — gated on the same daemon-
+	// callback env vars as the job tools. The daemon rejects calls
+	// to unlinked targets at the JWT layer, so registration here
+	// doesn't grant any reachability the agent didn't already have.
+	if agentTools := BuildAgentTools(); len(agentTools) > 0 {
+		tools = append(tools, agentTools...)
+		logger.Info("agent-linking tools registered", zap.Int("count", len(agentTools)))
+	}
+
 	// Introspection tools (context_list, context_show, env_list,
 	// mount_list). Always registered — they read from
 	// /etc/agent.yaml so no daemon callback is required. workDir is
