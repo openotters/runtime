@@ -354,6 +354,27 @@ func (s *Store) SaveMessage(ctx context.Context, sessionID, role, content string
 	return err
 }
 
+// AppendAssistantStub inserts an empty assistant row up front and
+// returns its id. The streaming path updates the row via
+// UpdateBranches after every callback event (tool call, tool
+// result, text delta, step finish) — so a runtime crash mid-stream
+// (self_reload, kill, OOM) leaves a partial-but-loadable assistant
+// turn in the daemon's message store instead of a ghost row that
+// only carries the user prompt.
+//
+// Content defaults to "[]" so the StoredPart array deserialises
+// cleanly even if the runtime dies before the first event fires.
+func (s *Store) AppendAssistantStub(ctx context.Context, sessionID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		"INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', '[]')",
+		sessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, messages []fantasy.Message) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

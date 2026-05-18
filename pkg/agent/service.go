@@ -102,6 +102,15 @@ type StoredPart struct {
 // is true and a prior assistant turn exists for the session, the
 // new parts get appended as a branch to that turn instead of
 // inserting a new row, so refresh recovers all alternatives.
+//
+// Long by design — the streaming pipeline is a single linear
+// construction of history load, stub-row insert, per-event
+// callbacks (each with its own incremental-persist hook),
+// Stream invocation, and final flush. Splitting it across helpers
+// would scatter the closure-shared state (parts, assistantRowID,
+// flushParts) and make the persistence flow harder to follow.
+//
+//nolint:funlen // see comment above.
 func (s *Service) ChatStream(
 	ctx context.Context, sessionID, prompt string, cb StreamCallback, opts ChatStreamOptions,
 ) (string, error) {
@@ -118,7 +127,12 @@ func (s *Service) ChatStream(
 		}
 	}
 
-	// Collected parts for this run; persisted at end-of-stream.
+	// Collected parts for this run. Persisted incrementally via
+	// flushParts on every stream event so a runtime crash mid-turn
+	// (self_reload, kill, OOM) leaves a recoverable partial assistant
+	// row in the daemon's store — the operator's next page refresh
+	// shows everything up to the last persisted event, not a ghost
+	// row carrying only the user prompt.
 	parts := []StoredPart{}
 	pushText := func(chunk string) {
 		if len(parts) == 0 || parts[len(parts)-1].Kind != "text" {
@@ -126,6 +140,41 @@ func (s *Service) ChatStream(
 			return
 		}
 		parts[len(parts)-1].Text += chunk
+	}
+
+	// Insert the assistant row up front so every stream event has a
+	// row to update. Regenerate keeps the old row (the existing
+	// branch-rotate path handles persistence on completion); inserting
+	// a second row here would double-up the turn.
+	var assistantRowID int64
+	if !opts.Regenerate {
+		id, stubErr := s.store.AppendAssistantStub(ctx, sessionID)
+		if stubErr != nil {
+			s.logger.Warn("failed to insert assistant stub", zap.Error(stubErr))
+		} else {
+			assistantRowID = id
+		}
+	}
+
+	// flushParts marshals the current parts and updates the assistant
+	// row in place. Detached context: keeps the write going even
+	// when the stream's parent ctx is cancelled (the common case for
+	// runtime kill / self_reload). Best-effort — a failed flush logs
+	// and lets the stream continue; the next event will retry.
+	flushParts := func() {
+		if assistantRowID == 0 {
+			return
+		}
+		contentJSON, marshalErr := json.Marshal(parts)
+		if marshalErr != nil {
+			s.logger.Warn("failed to marshal parts for incremental persist", zap.Error(marshalErr))
+			return
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), persistTimeout)
+		defer cancel()
+		if updErr := s.store.UpdateBranches(persistCtx, assistantRowID, string(contentJSON), "[]", 0); updErr != nil {
+			s.logger.Warn("incremental persist failed", zap.Error(updErr))
+		}
 	}
 
 	call := fantasy.AgentStreamCall{
@@ -137,11 +186,13 @@ func (s *Service) ChatStream(
 		},
 		OnStepFinish: func(step fantasy.StepResult) error {
 			cb(StreamEvent{Type: "step.finish", Content: step.Content.Text()})
+			flushParts()
 			return nil
 		},
 		OnTextDelta: func(_, text string) error {
 			pushText(text)
 			cb(StreamEvent{Type: "text.delta", Content: text})
+			flushParts()
 			return nil
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
@@ -156,6 +207,7 @@ func (s *Service) ChatStream(
 				Type: "tool.call", ToolName: tc.ToolName,
 				ToolID: tc.ToolCallID, Content: tc.Input,
 			})
+			flushParts()
 			return nil
 		},
 		OnToolResult: func(tr fantasy.ToolResultContent) error {
@@ -175,6 +227,7 @@ func (s *Service) ChatStream(
 				Type: "tool.result", ToolName: tr.ToolName,
 				ToolID: tr.ToolCallID, Content: content,
 			})
+			flushParts()
 			return nil
 		},
 	}
@@ -185,32 +238,26 @@ func (s *Service) ChatStream(
 	// sessions are per-call and the runtime hosts many concurrently.
 	result, streamErr := s.agent.Stream(sessionctx.With(ctx, sessionID), call)
 
-	// Persist whatever the OnTextDelta / OnToolCall / OnToolResult
-	// callbacks accumulated, regardless of how Stream returned.
-	// Critical for the cancel path: when the user clicks Stop or
-	// disconnects, ctx is cancelled, Stream errors with
-	// context.Canceled, and without this the partial assistant turn
-	// (the text + any in-flight tool calls the model produced before
-	// the interrupt) would be discarded — the next page refresh
-	// would show only the user prompt, "ghosting" the work the model
-	// already did. Persistence is best-effort; if it fails we log
-	// and still surface the stream error (or success) below.
-	//
-	// Save unconditionally on success (parts may legitimately be
-	// empty for stub-driven tests / no-output turns); on stream
-	// error skip the save when parts is empty to avoid inserting a
-	// blank assistant row for a turn the model never started.
+	// Final flush. For the streaming-from-empty path the stub row
+	// is in place and every event already updated it — this is the
+	// trailing best-effort sync after Stream's last callback fired.
+	// For the regenerate path, hand off to persistAssistantTurn which
+	// slides the prior content into branches and overwrites the row.
 	//
 	// Use a detached context so a cancelled parent ctx (the common
-	// reason we're in this branch) doesn't immediately kill the
+	// reason for the cancel branch) doesn't immediately kill the
 	// SQLite write too.
-	shouldPersist := streamErr == nil || len(parts) > 0
-	if shouldPersist {
+	switch {
+	case opts.Regenerate && (streamErr == nil || len(parts) > 0):
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), persistTimeout)
-		if persistErr := s.persistAssistantTurn(persistCtx, sessionID, parts, opts.Regenerate); persistErr != nil {
+		if persistErr := s.persistAssistantTurn(persistCtx, sessionID, parts, true); persistErr != nil {
 			s.logger.Warn("failed to persist assistant turn", zap.Error(persistErr))
 		}
 		persistCancel()
+	case assistantRowID != 0:
+		// Stub-row path: a final flush captures any state set
+		// between the last callback and Stream's return.
+		flushParts()
 	}
 
 	if streamErr != nil {
