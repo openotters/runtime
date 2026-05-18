@@ -184,6 +184,18 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 
+	// visible_to_model gates whether a row is included in the
+	// LLM-facing GetMessages window. Compaction flips OLDER rows to
+	// 0 and inserts a synthetic summary row at visible=1 — the
+	// model's prompt stays under the cap while the UI's ListMessages
+	// view keeps the full conversation intact. Default 1 so every
+	// existing row stays visible after migration; only compaction
+	// hides rows.
+	if err := addColumnIfMissing(ctx, db, "messages", "visible_to_model",
+		"INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -227,8 +239,16 @@ func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, decl str
 }
 
 func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]fantasy.Message, error) {
+	// visible_to_model = 1 filter is what makes compaction
+	// non-destructive: hidden rows stay on disk for the UI but the
+	// model only sees the active window + any synthetic summary
+	// rows compaction inserted.
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 50",
+		`SELECT role, content
+		   FROM messages
+		  WHERE session_id = ? AND visible_to_model = 1
+		  ORDER BY created_at ASC
+		  LIMIT 50`,
 		sessionID,
 	)
 	if err != nil {
@@ -279,12 +299,17 @@ func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]fantasy.Me
 //     non-empty, is a JSON-encoded array of alternative parts
 //     arrays produced by Regenerate.
 type StoredMessage struct {
-	ID            int64
-	Role          string
-	Content       string
-	BranchesJSON  string
-	ActiveBranch  int
-	CreatedAt     time.Time
+	ID           int64
+	Role         string
+	Content      string
+	BranchesJSON string
+	ActiveBranch int
+	CreatedAt    time.Time
+	// VisibleToModel is false when compaction has hidden the row
+	// from the LLM's GetMessages window. The UI still renders the
+	// row (with a "collapsed" marker) so the operator can see the
+	// full conversation history regardless of compaction state.
+	VisibleToModel bool
 }
 
 // ListMessages returns the persisted messages for sessionID with
@@ -292,7 +317,7 @@ type StoredMessage struct {
 // GetMessages.
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]StoredMessage, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, role, content, branches_json, active_branch, created_at
+		`SELECT id, role, content, branches_json, active_branch, created_at, visible_to_model
 		   FROM messages
 		  WHERE session_id = ?
 		  ORDER BY created_at ASC, id ASC LIMIT 50`,
@@ -306,9 +331,11 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]StoredMes
 	var out []StoredMessage
 	for rows.Next() {
 		var m StoredMessage
-		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.BranchesJSON, &m.ActiveBranch, &m.CreatedAt); err != nil {
+		var visible int
+		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.BranchesJSON, &m.ActiveBranch, &m.CreatedAt, &visible); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
+		m.VisibleToModel = visible == 1
 		out = append(out, m)
 	}
 
@@ -373,6 +400,77 @@ func (s *Store) AppendAssistantStub(ctx context.Context, sessionID string) (int6
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// HideAndAppendSummary marks every currently-visible row in the
+// session as hidden from the model, then inserts a synthetic
+// system-role row carrying the summary. Used by the compactor to
+// shrink the model's prompt window WITHOUT destroying the raw
+// history the UI reads via ListMessages.
+//
+// The summary row is visible (and is the only "old context" the
+// model sees on subsequent turns). Plain-summary content goes in
+// as-is; the UI renders it like any other system message.
+//
+// Idempotent in the sense that re-running with the same summary
+// hides nothing new (everything's already hidden) and inserts a
+// second summary row — callers control the cadence via the
+// compactor's shouldCompact check.
+func (s *Store) HideAndAppendSummary(ctx context.Context, sessionID, summary string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE messages SET visible_to_model = 0 WHERE session_id = ? AND visible_to_model = 1`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf("hiding existing messages: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		"INSERT INTO messages (session_id, role, content, visible_to_model) VALUES (?, 'system', ?, 1)",
+		sessionID, summary,
+	); err != nil {
+		return fmt.Errorf("inserting summary: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// HideOlder marks all but the N most recent visible rows as
+// hidden. Used by the sliding-window compaction strategy when
+// summarization isn't desired (or fails to fall through). UI keeps
+// every row; only the model's GetMessages window narrows.
+func (s *Store) HideOlder(ctx context.Context, sessionID string, keep int) error {
+	if keep < 0 {
+		keep = 0
+	}
+	// Hide everything NOT in the "newest `keep` visible rows" set.
+	// SQLite's row_number isn't available pre-3.25, but the
+	// subquery form is portable: select the N most recent visible
+	// ids and hide all OTHER visible rows in the same session.
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE messages
+		   SET visible_to_model = 0
+		 WHERE session_id = ?
+		   AND visible_to_model = 1
+		   AND id NOT IN (
+		       SELECT id FROM messages
+		        WHERE session_id = ? AND visible_to_model = 1
+		     ORDER BY created_at DESC, id DESC
+		        LIMIT ?
+		   )`, sessionID, sessionID, keep)
+	if err != nil {
+		return fmt.Errorf("hiding older messages: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, messages []fantasy.Message) error {

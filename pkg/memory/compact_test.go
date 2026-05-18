@@ -3,7 +3,6 @@ package memory_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -65,16 +64,30 @@ func TestCompactor_SlidingDropsOldMessages(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	msgs, _ := store.GetMessages(ctx, "s")
-
-	// kept = maxMessages (4) + 1 system notice = 5
-	if len(msgs) != 5 {
-		t.Fatalf("after slide, got %d messages, want 5", len(msgs))
+	// Non-destructive compaction: the model's view is narrowed to
+	// the most recent `maxMessages` (4); the UI's ListMessages
+	// still returns all 10 rows.
+	modelMsgs, _ := store.GetMessages(ctx, "s")
+	if len(modelMsgs) != 4 {
+		t.Fatalf("after slide, model view = %d messages, want 4", len(modelMsgs))
 	}
 
-	last := lastTextPart(t, msgs)
-	if !strings.Contains(last, "Memory compacted") {
-		t.Errorf("missing system notice; last message = %q", last)
+	uiMsgs, _ := store.ListMessages(ctx, "s")
+	if len(uiMsgs) != 10 {
+		t.Fatalf("after slide, UI view = %d messages, want 10 (compaction is non-destructive)", len(uiMsgs))
+	}
+
+	// The 6 oldest rows must be flagged hidden; the 4 newest visible.
+	hidden, visible := 0, 0
+	for _, m := range uiMsgs {
+		if m.VisibleToModel {
+			visible++
+		} else {
+			hidden++
+		}
+	}
+	if hidden != 6 || visible != 4 {
+		t.Errorf("after slide, hidden=%d visible=%d, want 6 / 4", hidden, visible)
 	}
 }
 
@@ -105,33 +118,17 @@ func TestCompactor_SummarizeFallsBackToSlideOnModelError(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	msgs, _ := store.GetMessages(ctx, "s")
-
-	// On model error the compactor falls back to sliding.
-	last := lastTextPart(t, msgs)
-	if !strings.Contains(last, "sliding") {
-		t.Errorf("expected sliding-fallback notice; got %q", last)
+	// Fallback hides older rows (no summary row inserted because
+	// the model errored). Model sees just the recent half (=2,
+	// since summarize halves maxMessages); UI keeps all 8.
+	modelMsgs, _ := store.GetMessages(ctx, "s")
+	if len(modelMsgs) != 2 {
+		t.Fatalf("after fallback slide, model view = %d, want 2 (maxMessages/2)", len(modelMsgs))
 	}
-}
-
-func lastTextPart(t *testing.T, msgs []fantasy.Message) string {
-	t.Helper()
-
-	if len(msgs) == 0 {
-		t.Fatal("messages empty")
+	uiMsgs, _ := store.ListMessages(ctx, "s")
+	if len(uiMsgs) != 8 {
+		t.Fatalf("after fallback slide, UI view = %d, want 8", len(uiMsgs))
 	}
-
-	last := msgs[len(msgs)-1]
-	if len(last.Content) == 0 {
-		t.Fatal("last message has no parts")
-	}
-
-	tp, ok := last.Content[0].(fantasy.TextPart)
-	if !ok {
-		t.Fatalf("last message part type = %T, want TextPart", last.Content[0])
-	}
-
-	return tp.Text
 }
 
 // errorLM is the smallest fantasy.LanguageModel that always errors on

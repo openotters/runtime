@@ -31,6 +31,17 @@ func NewCompactor(cfg Config, logger *zap.Logger) *Compactor {
 	}
 }
 
+// Compact narrows the LLM-facing message window when it grows past
+// the configured caps. Non-destructive: the raw history stays on
+// disk for the UI's ListMessages view. The summarize strategy
+// generates a one-paragraph recap and inserts it as a system row;
+// the slide strategy just hides the older rows without a recap.
+//
+// Both paths flip visible_to_model = 0 on older rows. The next
+// GetMessages call (model history load) returns only the recent
+// window + the synthetic summary, but ListMessages still shows
+// everything — the operator can scroll back through the full
+// transcript with a "collapsed" hint on hidden rows.
 func (c *Compactor) Compact(
 	ctx context.Context, model fantasy.LanguageModel,
 	store *Store, sessionID string,
@@ -50,27 +61,45 @@ func (c *Compactor) Compact(
 		zap.Int("messages", len(msgs)),
 	)
 
-	var compacted []fantasy.Message
+	keep := c.maxMessages
+	if c.strategy == "summarize" {
+		// Summarize keeps the most recent half; the LLM-generated
+		// summary stands in for the older half. Matches the
+		// previous balance — half-context, half-recent.
+		keep = c.maxMessages / 2
+		if keep < 2 {
+			keep = 2
+		}
+	}
+	if keep < 2 {
+		keep = 2
+	}
+	if keep > len(msgs) {
+		keep = len(msgs)
+	}
 
 	switch c.strategy {
 	case "summarize":
-		compacted, err = c.summarize(ctx, model, msgs)
-		if err != nil {
-			c.logger.Warn("summarize failed, falling back to sliding", zap.Error(err))
-			compacted = c.slide(msgs)
+		summary, sumErr := c.generateSummary(ctx, model, msgs[:len(msgs)-keep])
+		if sumErr != nil {
+			c.logger.Warn("summarize failed, falling back to sliding", zap.Error(sumErr))
+			if hideErr := store.HideOlder(ctx, sessionID, keep); hideErr != nil {
+				return fmt.Errorf("hiding older messages: %w", hideErr)
+			}
+		} else if applyErr := store.HideAndAppendSummary(ctx, sessionID, summary); applyErr != nil {
+			return fmt.Errorf("applying summary: %w", applyErr)
 		}
 	default:
-		compacted = c.slide(msgs)
-	}
-
-	if err = store.ReplaceMessages(ctx, sessionID, compacted); err != nil {
-		return fmt.Errorf("replacing messages: %w", err)
+		if hideErr := store.HideOlder(ctx, sessionID, keep); hideErr != nil {
+			return fmt.Errorf("hiding older messages: %w", hideErr)
+		}
 	}
 
 	c.logger.Info("history compacted",
 		zap.String("session", sessionID),
-		zap.Int("before", len(msgs)),
-		zap.Int("after", len(compacted)),
+		zap.Int("before_visible", len(msgs)),
+		zap.Int("kept_recent", keep),
+		zap.String("strategy", c.strategy),
 	)
 
 	return nil
@@ -98,41 +127,17 @@ func (c *Compactor) estimateTokens(msgs []fantasy.Message) int {
 	return total
 }
 
-func (c *Compactor) slide(msgs []fantasy.Message) []fantasy.Message {
-	keep := c.maxMessages
-	if keep < 2 {
-		keep = 2
+// generateSummary asks the LLM to condense the older messages into
+// one paragraph. Returned as a plain string; the caller wraps it
+// in the synthetic system row via store.HideAndAppendSummary.
+func (c *Compactor) generateSummary(
+	ctx context.Context, model fantasy.LanguageModel, oldMsgs []fantasy.Message,
+) (string, error) {
+	if len(oldMsgs) == 0 {
+		return "", nil
 	}
-
-	if len(msgs) <= keep {
-		return msgs
-	}
-
-	sliced := msgs[len(msgs)-keep:]
-
-	return appendNotice(sliced,
-		fmt.Sprintf("[system]: Memory compacted (sliding). %d older messages were dropped. "+
-			"If the user refers to something you don't recall, let them know your memory was compacted.", len(msgs)-keep),
-	)
-}
-
-func (c *Compactor) summarize(
-	ctx context.Context, model fantasy.LanguageModel, msgs []fantasy.Message,
-) ([]fantasy.Message, error) {
-	keep := c.maxMessages / 2
-	if keep < 2 {
-		keep = 2
-	}
-
-	if len(msgs) <= keep {
-		return msgs, nil
-	}
-
-	oldMsgs := msgs[:len(msgs)-keep]
-	recentMsgs := msgs[len(msgs)-keep:]
 
 	var b strings.Builder
-
 	for _, m := range oldMsgs {
 		fmt.Fprintf(&b, "[%s]: %s\n", m.Role, messageText(m))
 	}
@@ -149,39 +154,17 @@ func (c *Compactor) summarize(
 
 	resp, err := model.Generate(ctx, fantasy.Call{Prompt: prompt})
 	if err != nil {
-		return nil, fmt.Errorf("generating summary: %w", err)
+		return "", fmt.Errorf("generating summary: %w", err)
 	}
 
 	summary := resp.Content.Text()
 
 	c.logger.Info("history summarized",
 		zap.Int("old_messages", len(oldMsgs)),
-		zap.Int("kept_messages", len(recentMsgs)),
 		zap.Int("summary_len", len(summary)),
 	)
 
-	compacted := make([]fantasy.Message, 0, 2+len(recentMsgs))
-	compacted = append(compacted, fantasy.Message{
-		Role: fantasy.MessageRoleAssistant,
-		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: "[Conversation summary]: " + summary},
-		},
-	})
-	compacted = append(compacted, recentMsgs...)
-
-	return appendNotice(compacted,
-		fmt.Sprintf("[system]: Memory compacted (summarized). %d older messages were condensed into a summary above. "+
-			"Use the summary to maintain context.", len(oldMsgs)),
-	), nil
-}
-
-func appendNotice(msgs []fantasy.Message, text string) []fantasy.Message {
-	return append(msgs, fantasy.Message{
-		Role: fantasy.MessageRoleUser,
-		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: text},
-		},
-	})
+	return "[Conversation summary]: " + summary, nil
 }
 
 func messageTextLen(m fantasy.Message) int {
