@@ -414,10 +414,10 @@ github.com/onsi/ginkgo/v2 v2.28.1 h1:S4hj+HbZp40fNKuLUQOYLDgZLwNUVn19N3Atb98NCyI
 github.com/onsi/ginkgo/v2 v2.28.1/go.mod h1:CLtbVInNckU3/+gC8LzkGUb9oF+e8W8TdUsxPwvdOgE=
 github.com/onsi/gomega v1.39.1 h1:1IJLAad4zjPn2PsnhH70V4DKRFlrCzGBNrNaru+Vf28=
 github.com/onsi/gomega v1.39.1/go.mod h1:hL6yVALoTOxeWudERyfppUcZXjMwIMLnuSfruD2lcfg=
-github.com/openotters/agentfile v1.0.0-alpha.42 h1:cq8rlqby+Od2sqZDzKUymR2/Z3BYQolhsy4duhSKAbA=
-github.com/openotters/agentfile v1.0.0-alpha.42/go.mod h1:e+M+ZukgHT4pR+kJHleu2BCudDo+tcYdUFh1ktuTzkc=
-github.com/openotters/openotters v1.0.0-alpha.88 h1:EOUP7YAh+T/WhEOAhn2Xjd/Kqq0yvAR7p/p81Xcq5Fw=
-github.com/openotters/openotters v1.0.0-alpha.88/go.mod h1:+RuBfDpzTKESFM+GEhlzzw0e81QaLvxU7HfQcBG6ces=
+github.com/openotters/agentfile v1.0.0-alpha.43 h1:yD9XdGYuUFloBoZlTi9a4Ru2tJ3tcaGBdCd83SbB09I=
+github.com/openotters/agentfile v1.0.0-alpha.43/go.mod h1:e+M+ZukgHT4pR+kJHleu2BCudDo+tcYdUFh1ktuTzkc=
+github.com/openotters/openotters v1.0.0-alpha.89 h1:iJPHnhWYeaSZgT5Q7dZKb54vt3PNnsd/u7RTL+3vOCA=
+github.com/openotters/openotters v1.0.0-alpha.89/go.mod h1:x3xqf8Lq0p0Y3ghNlLkBk7CXEUs2EpP1fDbcpHoarn4=
 github.com/otiai10/copy v1.2.0/go.mod h1:rrF5dJ5F0t/EWSYODDu4j9/vEeYHMkc8jt0zJChqQWw=
 github.com/otiai10/copy v1.14.0 h1:dCI/t1iTdYGtkvCuBG2BgR6KZa83PTclw4U5n2wAllU=
 github.com/otiai10/copy v1.14.0/go.mod h1:ECfuL02W+/FkTWZWgQqXPWZgW9oeKCSQ5qVfSc4qc4w=
