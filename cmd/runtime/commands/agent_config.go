@@ -103,6 +103,12 @@ type AgentConfig struct {
 	// ordered context files. Also never CLI flags.
 	Tools   []ToolConfig        `kong:"-" yaml:"tools,omitempty" json:"tools,omitempty"`
 	Context []agent.ContextFile `kong:"-" yaml:"context,omitempty" json:"context,omitempty"`
+	// Capabilities are the auto-injected tool names the daemon
+	// granted this agent (note_save, agent_list, …). Populated
+	// from agent.yaml's capabilities: block. LoadTools registers
+	// only tools whose name appears here — matching the daemon's
+	// requireCapability gate. Empty = no auto-injected tools.
+	Capabilities []string `kong:"-"`
 }
 
 func (c *AgentConfig) contextDir() string   { return filepath.Join(c.Root, "etc", "context") }
@@ -267,7 +273,7 @@ func (c *AgentConfig) loadTools(notesStore *notes.Store, logger *zap.Logger) ([]
 		}
 	}
 
-	return tool.LoadTools(defs, c.Root, notesStore, c.Notes.MaxBytesPer, c.Notes.MaxCount, logger)
+	return tool.LoadTools(defs, c.Root, c.Capabilities, notesStore, c.Notes.MaxBytesPer, c.Notes.MaxCount, logger)
 }
 
 // resolveDocPath rewrites a doc path the executor stamped into
@@ -312,6 +318,16 @@ type agentYAML struct {
 		Binary      string `yaml:"binary"`
 		Usage       string `yaml:"usage,omitempty"`
 	} `yaml:"tools,omitempty"`
+	// Capabilities is the daemon-resolved cap set for this agent.
+	// Each entry is the catalogued tool name (note_save,
+	// agent_list, …); descriptions live alongside for the AGENT.md
+	// renderer but we only need names here for tool registration
+	// gating. The runtime registers ONLY tools whose name appears
+	// here — defence in depth alongside the daemon's
+	// requireCapability RPC gate.
+	Capabilities []struct {
+		Name string `yaml:"name"`
+	} `yaml:"capabilities,omitempty"`
 }
 
 // loadAgentConfig reads etc/agent.yaml from the root directory.
@@ -365,6 +381,13 @@ func (c *AgentConfig) loadAgentConfig(logger *zap.Logger) {
 	if len(c.Context) == 0 && len(cfg.Context) > 0 {
 		for _, e := range cfg.Context {
 			c.Context = append(c.Context, agent.ContextFile{Name: e.Name, Path: e.File})
+		}
+	}
+
+	if len(c.Capabilities) == 0 && len(cfg.Capabilities) > 0 {
+		c.Capabilities = make([]string, 0, len(cfg.Capabilities))
+		for _, e := range cfg.Capabilities {
+			c.Capabilities = append(c.Capabilities, e.Name)
 		}
 	}
 

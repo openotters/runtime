@@ -44,11 +44,23 @@ type Docs struct {
 // tools (context_*, env_list, mount_list), and — when notesStore
 // is non-nil — the note_* tools.
 //
+// caps is the agent's runtime cap allowlist (from agent.yaml's
+// capabilities: block, which mirrors the daemon's
+// JWT.Capabilities claim). Auto-injected tools (job_*, agent_*,
+// note_*, introspection) are filtered against this list — a tool
+// whose name isn't in caps is NOT registered. The model literally
+// can't see tools it can't call. Defence in depth alongside the
+// daemon's requireCapability RPC gate.
+//
+// BIN-declared tools (defs) are always registered — the
+// CAPABILITY directive doesn't gate per-BIN tools; an Agentfile's
+// BIN directive is itself the grant for that BIN.
+//
 // notesStore is intentionally optional: dev invocations of the
 // runtime binary without a memory.db (e.g. a one-shot CLI prompt)
 // still work, just without the notes capability registered.
 func LoadTools(
-	defs []Def, workDir string,
+	defs []Def, workDir string, caps []string,
 	notesStore *notes.Store, notesMaxBytes, notesMaxCount int,
 	logger *zap.Logger,
 ) ([]fantasy.AgentTool, error) {
@@ -70,41 +82,60 @@ func LoadTools(
 		logger.Info("tool loaded", zap.String("name", cfg.Name), zap.String("binary", cfg.Binary))
 	}
 
-	// Daemon-callback tools (job_submit / job_status / job_wait).
-	// Auto-registered when both OTTERSD_URL and OTTERS_AGENT_TOKEN
-	// are present in the spawn env — the agentfile executor plants
-	// them at CreateAgent time. Absence means an old daemon
-	// (pre-JWT) or --no-http; the agent operates with only the
-	// per-BIN sync exec tools above, no error.
-	if jobTools := BuildJobTools(); len(jobTools) > 0 {
+	hasCap := makeCapSet(caps)
+
+	// Each auto-injected tool registers only if its name is in
+	// caps. filterTools is a small helper that drops un-granted
+	// names from the slice; tools registered by the builders
+	// already carry their canonical name.
+	if jobTools := filterTools(BuildJobTools(), hasCap); len(jobTools) > 0 {
 		tools = append(tools, jobTools...)
 		logger.Info("daemon-job tools registered", zap.Int("count", len(jobTools)))
 	}
 
-	// Agent-to-agent linking tools — gated on the same daemon-
-	// callback env vars as the job tools. The daemon rejects calls
-	// to unlinked targets at the JWT layer, so registration here
-	// doesn't grant any reachability the agent didn't already have.
-	if agentTools := BuildAgentTools(); len(agentTools) > 0 {
+	if agentTools := filterTools(BuildAgentTools(), hasCap); len(agentTools) > 0 {
 		tools = append(tools, agentTools...)
 		logger.Info("agent-linking tools registered", zap.Int("count", len(agentTools)))
 	}
 
-	// Introspection tools (context_list, context_show, env_list,
-	// mount_list). Always registered — they read from
-	// /etc/agent.yaml so no daemon callback is required. workDir is
-	// the agent root for the system executor or `/` for docker.
-	introspect := BuildIntrospectionTools(workDir)
-	tools = append(tools, introspect...)
-	logger.Info("introspection tools registered", zap.Int("count", len(introspect)))
+	if introspect := filterTools(BuildIntrospectionTools(workDir), hasCap); len(introspect) > 0 {
+		tools = append(tools, introspect...)
+		logger.Info("introspection tools registered", zap.Int("count", len(introspect)))
+	}
 
 	if notesStore != nil {
-		ns := BuildNotesTools(notesStore, notesMaxBytes, notesMaxCount)
-		tools = append(tools, ns...)
-		logger.Info("notes tools registered", zap.Int("count", len(ns)))
+		ns := filterTools(BuildNotesTools(notesStore, notesMaxBytes, notesMaxCount), hasCap)
+		if len(ns) > 0 {
+			tools = append(tools, ns...)
+			logger.Info("notes tools registered", zap.Int("count", len(ns)))
+		}
 	}
 
 	return tools, nil
+}
+
+func makeCapSet(caps []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(caps))
+	for _, c := range caps {
+		out[c] = struct{}{}
+	}
+	return out
+}
+
+// filterTools drops any tool whose name isn't in the cap allowlist.
+// Used by LoadTools to gate every auto-injected tool on the
+// agent.yaml capabilities: list.
+func filterTools(tools []fantasy.AgentTool, hasCap map[string]struct{}) []fantasy.AgentTool {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]fantasy.AgentTool, 0, len(tools))
+	for _, t := range tools {
+		if _, ok := hasCap[t.Info().Name]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // composeDescription stitches the short BIN directive description
