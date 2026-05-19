@@ -77,6 +77,10 @@ type StreamEvent struct {
 	ToolName string
 	ToolID   string
 	Content  string
+	// DurationMs is the wall-clock execution time for the event.
+	// Populated on tool.result (= OnToolCall→OnToolResult elapsed)
+	// and zero on every other type.
+	DurationMs int64
 }
 
 type StreamCallback func(event StreamEvent)
@@ -95,6 +99,12 @@ type StoredPart struct {
 	Input  string `json:"input,omitempty"`   // kind=tool, raw JSON the model produced
 	Output string `json:"output,omitempty"`  // kind=tool
 	State  string `json:"state,omitempty"`   // "input-available" | "output-available"
+	// DurationMs is the wall-clock time the tool spent executing,
+	// measured from OnToolCall to OnToolResult. Populated only on
+	// kind=tool parts where the result has come back; zero while
+	// state == "input-available". Persisted so historical chat
+	// rendering keeps the timing visible after a page refresh.
+	DurationMs int64 `json:"duration_ms,omitempty"`
 }
 
 // ChatStream runs one streamed turn against the configured model
@@ -134,6 +144,11 @@ func (s *Service) ChatStream(
 	// shows everything up to the last persisted event, not a ghost
 	// row carrying only the user prompt.
 	parts := []StoredPart{}
+	// toolStarts maps tool_call_id → wall-clock start time so
+	// OnToolResult can compute the elapsed duration when the
+	// matching result lands. Cleared per-call when the result
+	// arrives; never persisted (only the elapsed value is).
+	toolStarts := make(map[string]time.Time)
 	pushText := func(chunk string) {
 		if len(parts) == 0 || parts[len(parts)-1].Kind != "text" {
 			parts = append(parts, StoredPart{Kind: "text", Text: chunk})
@@ -196,6 +211,7 @@ func (s *Service) ChatStream(
 			return nil
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			toolStarts[tc.ToolCallID] = time.Now()
 			parts = append(parts, StoredPart{
 				Kind:   "tool",
 				ToolID: tc.ToolCallID,
@@ -215,17 +231,23 @@ func (s *Service) ChatStream(
 			if text, ok := tr.Result.(fantasy.ToolResultOutputContentText); ok {
 				content = text.Text
 			}
+			var durMs int64
+			if start, ok := toolStarts[tr.ToolCallID]; ok {
+				durMs = time.Since(start).Milliseconds()
+				delete(toolStarts, tr.ToolCallID)
+			}
 			// Attach to the most recent matching tool call.
 			for i := len(parts) - 1; i >= 0; i-- {
 				if parts[i].Kind == "tool" && parts[i].ToolID == tr.ToolCallID && parts[i].State == "input-available" {
 					parts[i].Output = content
 					parts[i].State = "output-available"
+					parts[i].DurationMs = durMs
 					break
 				}
 			}
 			cb(StreamEvent{
 				Type: "tool.result", ToolName: tr.ToolName,
-				ToolID: tr.ToolCallID, Content: content,
+				ToolID: tr.ToolCallID, Content: content, DurationMs: durMs,
 			})
 			flushParts()
 			return nil

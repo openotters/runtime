@@ -74,10 +74,12 @@ func (s *GRPCServer) ChatStream(
 ) error {
 	cb := func(event agent.StreamEvent) {
 		_ = stream.Send(&runtimev1.ChatStreamEvent{
-			Type:    event.Type,
-			Step:    int32(event.Step), //nolint:gosec // step number is small
-			Tool:    event.ToolName,
-			Content: event.Content,
+			Type:       event.Type,
+			Step:       int32(event.Step), //nolint:gosec // step number is small
+			Tool:       event.ToolName,
+			Content:    event.Content,
+			ToolId:     event.ToolID,
+			DurationMs: event.DurationMs,
 		})
 	}
 

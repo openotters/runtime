@@ -7,7 +7,7 @@ require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/alecthomas/kong-yaml v0.2.0
 	github.com/merlindorin/go-shared v0.0.0-20260508231238-d98333880098
-	github.com/openotters/agentfile v1.0.0-alpha.44
+	github.com/openotters/agentfile v1.0.0-alpha.45
 	github.com/openotters/openotters v1.0.0-alpha.93
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.80.0
@@ -33,6 +33,8 @@ require (
 	github.com/Antonboom/errname v1.1.1 // indirect
 	github.com/Antonboom/nilnil v1.1.1 // indirect
 	github.com/Antonboom/testifylint v1.6.4 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/Djarvur/go-err113 v0.1.1 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
