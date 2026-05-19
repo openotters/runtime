@@ -271,13 +271,76 @@ func (c *Client) AgentCreateFromSource(
 	}, nil
 }
 
-// AgentDelete removes an agent by ref. No creator-scope filter — any
-// authenticated agent caller can delete any target.
+// AgentDelete removes a linked agent (target must appear in the
+// caller's JWT.Links). For the bypass-link variant call
+// AgentDeleteAny.
 func (c *Client) AgentDelete(ctx context.Context, ref string) error {
 	if err := c.ensure(); err != nil {
 		return err
 	}
 	_, err := c.rt.AgentDelete(ctx, &daemonv1.AgentDeleteRequest{Ref: ref})
+	return err
+}
+
+// AgentListAll returns every agent in the daemon, not just the
+// caller's links.
+func (c *Client) AgentListAll(ctx context.Context) ([]AgentView, error) {
+	if err := c.ensure(); err != nil {
+		return nil, err
+	}
+	resp, err := c.rt.AgentListAll(ctx, &daemonv1.AgentListAllRequest{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentView, 0, len(resp.GetAgents()))
+	for _, a := range resp.GetAgents() {
+		out = append(out, agentFromProto(a))
+	}
+	return out, nil
+}
+
+// AgentInfoAny inspects any agent by ref, bypassing the
+// link-scope check that AgentInfo applies.
+func (c *Client) AgentInfoAny(ctx context.Context, ref string) (AgentInfoView, error) {
+	if err := c.ensure(); err != nil {
+		return AgentInfoView{}, err
+	}
+	resp, err := c.rt.AgentInfoAny(ctx, &daemonv1.AgentInfoAnyRequest{Ref: ref})
+	if err != nil {
+		return AgentInfoView{}, err
+	}
+	return AgentInfoView{
+		AgentView:    agentFromProto(resp.GetAgent()),
+		Description:  resp.GetDescription(),
+		Capabilities: resp.GetCapabilities(),
+	}, nil
+}
+
+// AgentExecAny sends a prompt to any agent by ref, bypassing
+// the link-scope check that AgentExec applies. Session-id
+// semantics identical to AgentExec.
+func (c *Client) AgentExecAny(
+	ctx context.Context, ref, prompt, sessionID string,
+) (string, string, error) {
+	if err := c.ensure(); err != nil {
+		return "", "", err
+	}
+	resp, err := c.rt.AgentExecAny(ctx, &daemonv1.AgentExecAnyRequest{
+		Ref: ref, Prompt: prompt, SessionId: sessionID,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return resp.GetResponse(), resp.GetSessionId(), nil
+}
+
+// AgentDeleteAny removes any agent by ref, bypassing the
+// link-scope check that AgentDelete applies.
+func (c *Client) AgentDeleteAny(ctx context.Context, ref string) error {
+	if err := c.ensure(); err != nil {
+		return err
+	}
+	_, err := c.rt.AgentDeleteAny(ctx, &daemonv1.AgentDeleteAnyRequest{Ref: ref})
 	return err
 }
 

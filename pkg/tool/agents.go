@@ -56,6 +56,10 @@ func BuildAgentTools() []fantasy.AgentTool {
 		agentCreateTool(client),
 		agentCreateFromSourceTool(client),
 		agentDeleteTool(client),
+		agentListAllTool(client),
+		agentInfoAnyTool(client),
+		agentExecAnyTool(client),
+		agentDeleteAnyTool(client),
 		imageListTool(client),
 		binListTool(client),
 		modelListTool(client),
@@ -473,6 +477,7 @@ EXAMPLE — composing an Agentfile that needs curl + jq:
 	)
 }
 
+//nolint:dupl // shape parallel with agentExecAnyTool is intentional.
 func agentExecTool(c *agentclient.Client) fantasy.AgentTool {
 	desc := `**Delegate a request to a linked agent and wait for its full reply.** The target sees your prompt as a single user turn and persists it.
 
@@ -517,6 +522,139 @@ Errors with PermissionDenied if ref isn't in your link set.`
 				return errToolResp(err)
 			}
 			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+// ── bypass-link variants ────────────────────────────────────────
+// agent_list_all / agent_info_any / agent_exec_any /
+// agent_delete_any do the same work as their scoped siblings
+// but skip the JWT.Links check. Granted to every agent today;
+// a future capability wave will make them opt-in.
+
+func agentListAllTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `List EVERY agent in the daemon, not just the ones you can call directly.
+
+WHEN TO USE:
+  • You're a supervisor and need to see the whole graph.
+  • agent_list returned an empty / limited set and the user asked about an agent you're sure exists.
+
+CAVEAT: an agent in this list isn't guaranteed callable via agent_exec — use agent_exec_any when the target isn't in your link set.`
+	return fantasy.NewAgentTool(
+		"agent_list_all",
+		desc,
+		func(ctx context.Context, _ agentListInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			agents, err := c.AgentListAll(ctx)
+			if err != nil {
+				return errToolResp(err)
+			}
+			if len(agents) == 0 {
+				return fantasy.ToolResponse{
+					Content: "No agents in the daemon (impossible — you're calling this yourself).",
+				}, nil
+			}
+			var b strings.Builder
+			b.WriteString("| Name | Model | Status |\n")
+			b.WriteString("|------|-------|--------|\n")
+			for _, a := range agents {
+				fmt.Fprintf(&b, "| `%s` | %s | %s |\n", a.Name, a.Model, a.Status)
+			}
+			return fantasy.ToolResponse{Content: b.String()}, nil
+		},
+	)
+}
+
+func agentInfoAnyTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Inspect ANY agent's metadata (model, status, description, capabilities). Same payload as agent_info but no link-scope check — works on agents that aren't in your link set.
+
+EXAMPLE:
+  agent_info_any({"ref":"some-other-agent"})
+  → {"name":"some-other-agent", "model":"...", "description":"...", "capabilities":[...]}`
+	return fantasy.NewAgentTool(
+		"agent_info_any",
+		desc,
+		func(ctx context.Context, in agentRefInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			ref := strings.TrimSpace(in.Ref)
+			if ref == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "ref is required (call agent_list_all to discover)",
+				}, nil
+			}
+			info, err := c.AgentInfoAny(ctx, ref)
+			if err != nil {
+				return errToolResp(err)
+			}
+			payload, err := json.Marshal(info)
+			if err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+//nolint:dupl // shape parallel with agentExecTool is intentional.
+func agentExecAnyTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Send a prompt to ANY agent by ref and wait for the full reply. Same shape as agent_exec but bypasses the link-scope check.
+
+EXAMPLE — fresh thread:
+  agent_exec_any({"ref":"some-other-agent", "prompt":"..."})
+  → {"response":"...", "session_id":"from-agent:<your-id>:abc-123"}
+
+EXAMPLE — continue a thread:
+  agent_exec_any({"ref":"some-other-agent", "prompt":"...", "session_id":"from-agent:<your-id>:abc-123"})
+
+BLOCKING. The target sees your prompt as a single user turn and persists it.`
+	return fantasy.NewAgentTool(
+		"agent_exec_any",
+		desc,
+		func(ctx context.Context, in agentChatInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			ref := strings.TrimSpace(in.Ref)
+			if ref == "" || strings.TrimSpace(in.Prompt) == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "ref and prompt are both required",
+				}, nil
+			}
+			resp, sessionID, err := c.AgentExecAny(ctx, ref, in.Prompt, in.SessionID)
+			if err != nil {
+				return errToolResp(err)
+			}
+			payload, err := json.Marshal(struct {
+				Response  string `json:"response"`
+				SessionID string `json:"session_id"`
+			}{Response: resp, SessionID: sessionID})
+			if err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: string(payload)}, nil
+		},
+	)
+}
+
+func agentDeleteAnyTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Delete ANY agent by name or id. Bypasses the link-scope check that agent_delete applies.
+
+USE SPARINGLY. Destructive — removes the agent, its message history, its notes, and revokes its JWT. There is no undo.
+
+EXAMPLE:
+  agent_delete_any({"ref":"some-other-agent"})`
+	return fantasy.NewAgentTool(
+		"agent_delete_any",
+		desc,
+		func(ctx context.Context, in agentRefInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			ref := strings.TrimSpace(in.Ref)
+			if ref == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "ref is required",
+				}, nil
+			}
+			if err := c.AgentDeleteAny(ctx, ref); err != nil {
+				return errToolResp(err)
+			}
+			return fantasy.ToolResponse{Content: "deleted " + ref}, nil
 		},
 	)
 }
