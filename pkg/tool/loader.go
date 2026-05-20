@@ -7,7 +7,7 @@ import (
 	"charm.land/fantasy"
 	"go.uber.org/zap"
 
-	"github.com/openotters/runtime/pkg/notes"
+	"github.com/openotters/runtime/pkg/notesclient"
 )
 
 // Def declares a tool the runtime should register with the LLM. The
@@ -56,12 +56,12 @@ type Docs struct {
 // CAPABILITY directive doesn't gate per-BIN tools; an Agentfile's
 // BIN directive is itself the grant for that BIN.
 //
-// notesStore is intentionally optional: dev invocations of the
-// runtime binary without a memory.db (e.g. a one-shot CLI prompt)
+// notesClient is intentionally optional: dev invocations of the
+// runtime binary without a daemon (e.g. a one-shot CLI prompt)
 // still work, just without the notes capability registered.
 func LoadTools(
 	defs []Def, workDir string, caps []string,
-	notesStore *notes.Store, notesMaxBytes, notesMaxCount int,
+	notesClient notesclient.Store, notesMaxBytes, notesMaxCount int,
 	logger *zap.Logger,
 ) ([]fantasy.AgentTool, error) {
 	tools := make([]fantasy.AgentTool, 0, len(defs))
@@ -103,9 +103,12 @@ func LoadTools(
 		logger.Info("introspection tools registered", zap.Int("count", len(introspect)))
 	}
 
-	if notesStore != nil {
-		ns := filterTools(BuildNotesTools(notesStore, notesMaxBytes, notesMaxCount), hasCap)
-		if len(ns) > 0 {
+	// Interface nil-check: agent_config.go passes nil when no
+	// daemon callback is configured. Bare `!= nil` would be true
+	// for an interface holding a typed nil; guard the concrete
+	// client pointer explicitly via the parameter type.
+	if notesClient != nil {
+		if ns := filterTools(BuildNotesTools(notesClient, notesMaxBytes, notesMaxCount), hasCap); len(ns) > 0 {
 			tools = append(tools, ns...)
 			logger.Info("notes tools registered", zap.Int("count", len(ns)))
 		}

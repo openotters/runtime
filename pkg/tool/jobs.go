@@ -1,3 +1,9 @@
+// Tool descriptions are multi-paragraph markdown the model reads in
+// its tool catalogue; breaking the prose at 120 chars with Go string
+// concatenation hurts readability for reviewers and the rendered
+// output the model sees. Same precedent as pkg/tool/notes.go.
+//
+//nolint:lll // tool descriptions cross the 120-char ceiling intentionally.
 package tool
 
 import (
@@ -57,6 +63,8 @@ type ListJobsInput struct {
 // underlying gRPC connection multiplexes RPCs and lazy-dials on
 // first use, so an agent that never invokes a job tool pays
 // nothing.
+//
+//nolint:gocognit,funlen // single slice-literal of tool builders; each tool's body is small in isolation, the bulk is inline markdown for the LLM
 func BuildJobTools() []fantasy.AgentTool {
 	cfg, ok := jobsclient.FromEnv()
 	if !ok {

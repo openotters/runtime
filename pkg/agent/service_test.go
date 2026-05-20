@@ -2,17 +2,15 @@ package agent_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 
 	"charm.land/fantasy"
 	"go.uber.org/zap"
-	_ "modernc.org/sqlite"
 
 	"github.com/openotters/runtime/pkg/agent"
-	"github.com/openotters/runtime/pkg/memory"
+	"github.com/openotters/runtime/pkg/memoryclient"
 )
 
 // stubAgent satisfies fantasy.Agent and returns a fixed text response on
@@ -62,22 +60,9 @@ func (a *streamingCancelAgent) Stream(_ context.Context, call fantasy.AgentStrea
 	return nil, context.Canceled
 }
 
-func newServiceStore(t *testing.T) *memory.Store {
+func newServiceStore(t *testing.T) *memoryclient.Fake {
 	t.Helper()
-
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("opening sqlite: %v", err)
-	}
-
-	t.Cleanup(func() { _ = db.Close() })
-
-	store, err := memory.NewStore(context.Background(), db)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-
-	return store
+	return memoryclient.NewFake()
 }
 
 func TestService_ChatRoundTrip(t *testing.T) {
@@ -240,7 +225,13 @@ func TestService_PromptObjectSchemaMissingTopLevelType(t *testing.T) {
 	}
 }
 
-func TestService_ListAndDeleteSession(t *testing.T) {
+// ListSessions / DeleteSession used to live on agent.Service for
+// the runtime's old gRPC surface. They're now operator-facing on
+// the daemon's Runtime service, so the runtime side just produces
+// rows — the daemon enumerates them. Tests for that path live with
+// the daemon's StateStore unit tests; what's left to verify here
+// is that Chat actually persists rows the daemon can later read.
+func TestService_ChatPersistsTwoRowsPerTurn(t *testing.T) {
 	t.Parallel()
 
 	store := newServiceStore(t)
@@ -254,31 +245,13 @@ func TestService_ListAndDeleteSession(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 
-	sessions, err := svc.ListSessions(ctx)
-	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
+	n, _ := store.CountMessages(ctx, "alpha")
+	if n != 2 {
+		t.Fatalf("alpha rows = %d, want 2 (user + assistant)", n)
 	}
-
-	if len(sessions) != 2 {
-		t.Fatalf("got %d sessions, want 2", len(sessions))
-	}
-
-	msgs, err := svc.ListSessionMessages(ctx, "alpha", 10)
-	if err != nil {
-		t.Fatalf("ListSessionMessages: %v", err)
-	}
-
-	if len(msgs) == 0 || msgs[0].Content != "first" {
-		t.Errorf("msgs = %+v, want first user message visible", msgs)
-	}
-
-	if err = svc.DeleteSession(ctx, "alpha"); err != nil {
-		t.Fatalf("DeleteSession: %v", err)
-	}
-
-	sessions, _ = svc.ListSessions(ctx)
-	if len(sessions) != 1 || sessions[0].ID != "beta" {
-		t.Errorf("ListSessions after delete = %+v", sessions)
+	n, _ = store.CountMessages(ctx, "beta")
+	if n != 2 {
+		t.Fatalf("beta rows = %d, want 2", n)
 	}
 }
 

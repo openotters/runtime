@@ -1,3 +1,8 @@
+// JSON-schema descriptions on the LLM-facing Input struct intentionally
+// run past 120 chars — they're prose the model reads from the tool
+// catalogue. Same convention as pkg/tool/notes.go and pkg/tool/jobs.go.
+//
+//nolint:lll // jsonschema descriptions cross the 120-char ceiling intentionally.
 package tool
 
 import (

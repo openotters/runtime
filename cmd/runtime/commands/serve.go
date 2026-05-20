@@ -22,7 +22,6 @@ type Serve struct {
 func (s *Serve) Run(
 	ctx context.Context,
 	common *cmd.Commons,
-	sqlite *cmd.SQLite,
 ) error {
 	logger := common.MustLogger().Named("runtime")
 
@@ -34,7 +33,7 @@ func (s *Serve) Run(
 		zap.String("addr", s.Addr),
 	)
 
-	setup, err := s.setup(ctx, sqlite, logger)
+	setup, err := s.setup(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -46,7 +45,6 @@ func (s *Serve) Run(
 	srv := grpc.NewServer()
 	runtimev1.RegisterAgentRuntimeServer(srv, internal.NewGRPCServer(
 		setup.svc,
-		setup.notesStore, setup.notesMaxBytes, setup.notesMaxCount,
 		s.Name, s.Model,
 	))
 	reflection.Register(srv)

@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,13 +9,13 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/merlindorin/go-shared/pkg/cmd"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
 	"github.com/openotters/runtime/pkg/agent"
 	"github.com/openotters/runtime/pkg/memory"
-	"github.com/openotters/runtime/pkg/notes"
+	"github.com/openotters/runtime/pkg/memoryclient"
+	"github.com/openotters/runtime/pkg/notesclient"
 	"github.com/openotters/runtime/pkg/tool"
 )
 
@@ -116,11 +115,11 @@ func (c *AgentConfig) dataDir() string      { return filepath.Join(c.Root, "etc"
 func (c *AgentConfig) binDir() string       { return filepath.Join(c.Root, "usr", "bin") }
 func (c *AgentConfig) workspaceDir() string { return filepath.Join(c.Root, "workspace") }
 func (c *AgentConfig) tmpDir() string       { return filepath.Join(c.Root, "tmp") }
-func (c *AgentConfig) dbPath() string       { return filepath.Join(c.Root, "var", "lib", "memory.db") }
 
 type agentSetup struct {
 	svc           *agent.Service
-	notesStore    *notes.Store
+	notesClient   *notesclient.Client
+	memoryClient  *memoryclient.Client
 	notesMaxBytes int
 	notesMaxCount int
 	systemPrompt  string
@@ -128,7 +127,7 @@ type agentSetup struct {
 }
 
 func (c *AgentConfig) setup(
-	ctx context.Context, sqlite *cmd.SQLite, logger *zap.Logger,
+	ctx context.Context, logger *zap.Logger,
 ) (*agentSetup, error) {
 	c.loadAgentConfig(logger)
 
@@ -160,25 +159,21 @@ func (c *AgentConfig) setup(
 		zap.Int("bytes", len(systemPrompt)),
 	)
 
-	// Open the agent's sqlite database once and hand the same
-	// connection to both stores (messages + notes). Two stores on
-	// one *sql.DB is fine — SQLite handles concurrent connections
-	// to one file via WAL, but a single Go connection avoids the
-	// locking entirely.
-	db, err := c.openDB(sqlite)
-	if err != nil {
-		return nil, err
+	// Notes + messages now live on the daemon side. The two clients
+	// dial OTTERSD_URL with OTTERS_AGENT_TOKEN; missing env => nil
+	// clients (dev-mode runs without a daemon stay functional, just
+	// without the notes capability and an in-memory session that's
+	// not persisted anywhere).
+	var notesCli *notesclient.Client
+	if cfg, ok := notesclient.FromEnv(); ok {
+		notesCli = notesclient.New(cfg)
 	}
-	memStore, err := memory.NewStore(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	notesStore, err := notes.NewStore(ctx, db)
-	if err != nil {
-		return nil, err
+	var memCli *memoryclient.Client
+	if cfg, ok := memoryclient.FromEnv(); ok {
+		memCli = memoryclient.New(cfg)
 	}
 
-	tools, err := c.loadTools(notesStore, logger)
+	tools, err := c.loadTools(notesCli, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -196,13 +191,16 @@ func (c *AgentConfig) setup(
 	// value only controls the OPTIONAL preview-table of all notes —
 	// "off" (default) leaves the model tools-only for non-pinned
 	// notes; "above" / "below" adds the table at that placement.
-	extraOpts := []fantasy.AgentOption{
-		fantasy.WithPrepareStep(
-			agent.BuildNotesPrepareStep(systemPrompt, notesStore, c.Notes.PromptSection, logger),
-		),
+	var extraOpts []fantasy.AgentOption
+	if notesCli != nil {
+		extraOpts = append(extraOpts, fantasy.WithPrepareStep(
+			agent.BuildNotesPrepareStep(systemPrompt, notesCli, c.Notes.PromptSection, logger),
+		))
+		logger.Info("notes prepare-step installed",
+			zap.String("section", c.Notes.PromptSection))
+	} else {
+		logger.Info("notes prepare-step skipped (no daemon callback configured)")
 	}
-	logger.Info("notes prepare-step installed",
-		zap.String("section", c.Notes.PromptSection))
 
 	fantasyAgent, lm, err := agent.CreateAgent(ctx, agent.Config{
 		Provider: provider, ModelName: modelName,
@@ -225,8 +223,9 @@ func (c *AgentConfig) setup(
 	}, logger)
 
 	return &agentSetup{
-		svc:           agent.NewService(fantasyAgent, lm, memStore, compactor, logger),
-		notesStore:    notesStore,
+		svc:           agent.NewService(fantasyAgent, lm, memCli, compactor, logger),
+		notesClient:   notesCli,
+		memoryClient:  memCli,
 		notesMaxBytes: c.Notes.MaxBytesPer,
 		notesMaxCount: c.Notes.MaxCount,
 		systemPrompt:  systemPrompt,
@@ -241,24 +240,10 @@ func (c *AgentConfig) ensureDirs() error {
 			return fmt.Errorf("creating %s: %w", dir, err)
 		}
 	}
-
-	dbDir := filepath.Dir(c.dbPath())
-
-	return os.MkdirAll(dbDir, 0o755)
+	return nil
 }
 
-// openDB returns the agent's sqlite *sql.DB handle, defaulting the
-// sqlite Path to dbPath() when the operator left it as the in-memory
-// sentinel. Split out from openStore so memory.Store and notes.Store
-// can share the same connection.
-func (c *AgentConfig) openDB(sqlite *cmd.SQLite) (*sql.DB, error) {
-	if sqlite.Path == ":memory:" {
-		sqlite.Path = c.dbPath()
-	}
-	return sqlite.Open()
-}
-
-func (c *AgentConfig) loadTools(notesStore *notes.Store, logger *zap.Logger) ([]fantasy.AgentTool, error) {
+func (c *AgentConfig) loadTools(notesCli *notesclient.Client, logger *zap.Logger) ([]fantasy.AgentTool, error) {
 	defs := make([]tool.Def, len(c.Tools))
 	for i, t := range c.Tools {
 		binary := t.Binary
@@ -273,7 +258,14 @@ func (c *AgentConfig) loadTools(notesStore *notes.Store, logger *zap.Logger) ([]
 		}
 	}
 
-	return tool.LoadTools(defs, c.Root, c.Capabilities, notesStore, c.Notes.MaxBytesPer, c.Notes.MaxCount, logger)
+	// notesCli is typed *notesclient.Client; passing it as a
+	// notesclient.Store interface wraps a nil pointer into a typed
+	// nil interface, so the loader uses a typed nil-check below.
+	var store notesclient.Store
+	if notesCli != nil {
+		store = notesCli
+	}
+	return tool.LoadTools(defs, c.Root, c.Capabilities, store, c.Notes.MaxBytesPer, c.Notes.MaxCount, logger)
 }
 
 // resolveDocPath rewrites a doc path the executor stamped into

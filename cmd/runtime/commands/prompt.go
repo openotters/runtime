@@ -19,11 +19,10 @@ type Prompt struct {
 func (p *Prompt) Run(
 	ctx context.Context,
 	common *cmd.Commons,
-	sqlite *cmd.SQLite,
 ) error {
 	logger := common.MustLogger().Named("runtime-prompt")
 
-	setup, err := p.setup(ctx, sqlite, logger)
+	setup, err := p.setup(ctx, logger)
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,6 @@ package tool
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/openotters/runtime/pkg/notes"
+	"github.com/openotters/runtime/pkg/notesclient"
 )
 
 // BuildNotesTools returns the six LLM-facing tools that operate on
@@ -36,7 +36,7 @@ import (
 // for facts the model needs to lean on continuously (project name,
 // preferred conventions) rather than facts it only needs to recall
 // occasionally (one-off URLs, historical context).
-func BuildNotesTools(store *notes.Store, maxBytes, maxCount int) []fantasy.AgentTool {
+func BuildNotesTools(store notesclient.Store, maxBytes, maxCount int) []fantasy.AgentTool {
 	return []fantasy.AgentTool{
 		noteSaveTool(store, maxBytes, maxCount),
 		noteListTool(store),
@@ -57,7 +57,7 @@ type noteKeyInput struct {
 	Key string `json:"key" jsonschema:"description=Note identifier as returned by note_list."`
 }
 
-func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool {
+func noteSaveTool(store notesclient.Store, maxBytes, maxCount int) fantasy.AgentTool {
 	desc := "**Save this whenever the user states a durable fact** — " +
 		"cluster names, kubeconfig paths, preferred conventions, " +
 		"environment variable locations, project conventions, anything " +
@@ -119,7 +119,7 @@ func noteSaveTool(store *notes.Store, maxBytes, maxCount int) fantasy.AgentTool 
 	)
 }
 
-func noteListTool(store *notes.Store) fantasy.AgentTool {
+func noteListTool(store notesclient.Store) fantasy.AgentTool {
 	desc := "**Run this at the start of any non-trivial task** — and " +
 		"before asking the user a question whose answer you might " +
 		"have already saved. Returns key + last-updated + preview for " +
@@ -141,7 +141,7 @@ func noteListTool(store *notes.Store) fantasy.AgentTool {
 	)
 }
 
-func noteShowTool(store *notes.Store) fantasy.AgentTool {
+func noteShowTool(store notesclient.Store) fantasy.AgentTool {
 	desc := "Read the full body of a saved note. Use after note_list " +
 		"to load the specific fact you need — previews are truncated, " +
 		"this is the source of truth. Errors with the list of " +
@@ -159,7 +159,7 @@ func noteShowTool(store *notes.Store) fantasy.AgentTool {
 			}
 
 			n, err := store.Get(ctx, key)
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, notesclient.ErrNoteNotFound) {
 				return fantasy.ToolResponse{
 					IsError: true,
 					Content: missingKeyHint(ctx, store, key),
@@ -173,7 +173,7 @@ func noteShowTool(store *notes.Store) fantasy.AgentTool {
 	)
 }
 
-func noteDeleteTool(store *notes.Store) fantasy.AgentTool {
+func noteDeleteTool(store notesclient.Store) fantasy.AgentTool {
 	desc := "Drop a saved note when the user retracts the fact, " +
 		"corrects it, or it's no longer accurate. Idempotent: " +
 		"deleting a missing key still succeeds (the response " +
@@ -211,7 +211,7 @@ func noteDeleteTool(store *notes.Store) fantasy.AgentTool {
 	)
 }
 
-func notePinTool(store *notes.Store) fantasy.AgentTool {
+func notePinTool(store notesclient.Store) fantasy.AgentTool {
 	desc := "**Pin a note when you'll reference it on every step** of " +
 		"the current task — target cluster, active project, deployment " +
 		"invariant. Pinned notes flow into your system prompt as " +
@@ -228,7 +228,7 @@ func notePinTool(store *notes.Store) fantasy.AgentTool {
 	)
 }
 
-func noteUnpinTool(store *notes.Store) fantasy.AgentTool {
+func noteUnpinTool(store notesclient.Store) fantasy.AgentTool {
 	desc := "Unpin when a note is no longer load-bearing for the " +
 		"current task — keep the pinned set tight so the prompt " +
 		"stays focused. The note stays saved (note_show still works); " +
@@ -248,7 +248,7 @@ func noteUnpinTool(store *notes.Store) fantasy.AgentTool {
 // missing-key hint for the model. The only behavioural difference
 // between the two tools is the bool they pass through.
 func setInContextResp(
-	ctx context.Context, store *notes.Store, key string, inContext bool,
+	ctx context.Context, store notesclient.Store, key string, inContext bool,
 ) (fantasy.ToolResponse, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -263,7 +263,7 @@ func setInContextResp(
 	}
 
 	err := store.SetInContext(ctx, key, inContext)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, notesclient.ErrNoteNotFound) {
 		return fantasy.ToolResponse{
 			IsError: true,
 			Content: missingKeyHint(ctx, store, key),
@@ -287,7 +287,7 @@ func setInContextResp(
 // missing key — same UX pattern as context_show: tell the model
 // which keys actually exist so it can pick the right one without
 // guessing or hallucinating.
-func missingKeyHint(ctx context.Context, store *notes.Store, key string) string {
+func missingKeyHint(ctx context.Context, store notesclient.Store, key string) string {
 	all, err := store.List(ctx)
 	if err != nil || len(all) == 0 {
 		return fmt.Sprintf("no note named %q (no notes stored)", key)

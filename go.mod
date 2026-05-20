@@ -4,15 +4,15 @@ go 1.26.2
 
 require (
 	charm.land/fantasy v0.17.1
+	connectrpc.com/connect v1.19.2
 	github.com/alecthomas/kong v1.14.0
 	github.com/alecthomas/kong-yaml v0.2.0
 	github.com/merlindorin/go-shared v0.0.0-20260508231238-d98333880098
-	github.com/openotters/agentfile v1.0.0-alpha.49
+	github.com/openotters/agentfile v1.0.0-alpha.50
 	github.com/openotters/openotters v1.0.0-alpha.102
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.80.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.48.0
 )
 
 require (
@@ -282,6 +282,7 @@ require (
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.48.0 // indirect
 	mvdan.cc/gofumpt v0.9.2 // indirect
 	mvdan.cc/unparam v0.0.0-20251027182757-5beb8c8f8f15 // indirect
 )

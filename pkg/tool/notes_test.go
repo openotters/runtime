@@ -2,16 +2,13 @@ package tool_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"charm.land/fantasy"
-	_ "modernc.org/sqlite"
 
-	"github.com/openotters/runtime/pkg/notes"
+	"github.com/openotters/runtime/pkg/notesclient"
 	"github.com/openotters/runtime/pkg/tool"
 )
 
@@ -39,19 +36,9 @@ func callTool(t *testing.T, tools []fantasy.AgentTool, name, input string) fanta
 	return fantasy.ToolResponse{}
 }
 
-func openNotesStore(t *testing.T) *notes.Store {
+func openNotesStore(t *testing.T) *notesclient.Fake {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "memory.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := notes.NewStore(context.Background(), db)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	return store
+	return notesclient.NewFake()
 }
 
 func TestBuildNotesTools_Set(t *testing.T) {

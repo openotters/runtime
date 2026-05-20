@@ -8,17 +8,17 @@
 // the executor (see agentfile/executor/env.go's BuildLockedEnv):
 //
 //   - OTTERSD_URL          where to dial the daemon. unix://<path>
-//                          for the system executor; an http:// URL
-//                          for docker (the executor sets
-//                          host.docker.internal so the same value
-//                          resolves on macOS Docker Desktop and
-//                          Linux Docker via ExtraHosts).
+//     for the system executor; an http:// URL
+//     for docker (the executor sets
+//     host.docker.internal so the same value
+//     resolves on macOS Docker Desktop and
+//     Linux Docker via ExtraHosts).
 //   - OTTERS_AGENT_TOKEN   the JWT minted by the daemon at
-//                          CreateAgent. Attached as
-//                          `Authorization: Bearer …` on every RPC.
-//                          Empty token → constructor returns nil
-//                          (caller treats that as "the daemon
-//                          callback path isn't wired").
+//     CreateAgent. Attached as
+//     `Authorization: Bearer …` on every RPC.
+//     Empty token → constructor returns nil
+//     (caller treats that as "the daemon
+//     callback path isn't wired").
 //
 // The client lazy-dials on first use so a runtime that never invokes
 // a job tool pays nothing for the dependency.
@@ -46,7 +46,8 @@ import (
 // Env names — exported so tests / callers can override programmatically
 // without re-coding the convention.
 const (
-	EnvDaemonURL  = "OTTERSD_URL"
+	EnvDaemonURL = "OTTERSD_URL"
+	//nolint:gosec // G101: env var name, not a credential value
 	EnvAgentToken = "OTTERS_AGENT_TOKEN"
 )
 
@@ -218,6 +219,11 @@ func (c *Client) WatchJob(ctx context.Context, jobID string) (*JobView, error) {
 	// Bounded with its own short ctx so cancellation doesn't itself
 	// hang on a flaky daemon.
 	cancelDone := make(chan struct{})
+	// Intentional Background ctx below: parent ctx is already cancelled
+	// when this branch fires, so any derived ctx would inherit that and
+	// abort the CancelAsyncJob RPC before it can reach the daemon. The
+	// 2s timeout bounds the cleanup goroutine against a flaky daemon.
+	//nolint:gosec // G118: detached ctx required for shutdown cancellation
 	go func() {
 		defer close(cancelDone)
 		select {
@@ -233,15 +239,15 @@ func (c *Client) WatchJob(ctx context.Context, jobID string) (*JobView, error) {
 
 	var last *JobView
 	for {
-		resp, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
+		resp, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
 			break
 		}
-		if err != nil {
+		if recvErr != nil {
 			// Drain the cancel goroutine before returning.
 			streamCancel()
 			<-cancelDone
-			return last, err
+			return last, recvErr
 		}
 		last = jobFromProto(resp.GetJob())
 		if last.IsTerminal() {

@@ -11,20 +11,36 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/openotters/runtime/pkg/memory"
+	"github.com/openotters/runtime/pkg/memoryclient"
 	"github.com/openotters/runtime/pkg/sessionctx"
 )
+
+// MemoryStore is the interface the Service needs from its backing
+// memory store. *memoryclient.Client satisfies it in production;
+// tests inject an in-memory fake. Mirrors the prior pkg/memory.Store
+// surface used by the Service, plus the AppendAssistantStub helper
+// the streaming path leans on.
+type MemoryStore interface {
+	GetMessages(ctx context.Context, sessionID string) ([]fantasy.Message, error)
+	SaveMessage(ctx context.Context, sessionID, role, content string) (int64, error)
+	LastAssistantMessage(ctx context.Context, sessionID string) (memoryclient.StoredMessage, error)
+	UpdateBranches(ctx context.Context, id int64, content, branchesJSON string, active int) error
+	AppendAssistantStub(ctx context.Context, sessionID string) (int64, error)
+	ListMessages(ctx context.Context, sessionID string) ([]memoryclient.StoredMessage, error)
+	ReplaceMessages(ctx context.Context, sessionID string, msgs []memoryclient.StoredMessage) error
+}
 
 type Service struct {
 	agent     fantasy.Agent
 	model     fantasy.LanguageModel
-	store     *memory.Store
+	store     MemoryStore
 	compactor *memory.Compactor
 	logger    *zap.Logger
 }
 
 func NewService(
 	agent fantasy.Agent, model fantasy.LanguageModel,
-	store *memory.Store, compactor *memory.Compactor, logger *zap.Logger,
+	store MemoryStore, compactor *memory.Compactor, logger *zap.Logger,
 ) *Service {
 	return &Service{
 		agent:     agent,
@@ -41,7 +57,7 @@ func (s *Service) Chat(ctx context.Context, sessionID, prompt string) (string, e
 		s.logger.Warn("failed to load history", zap.Error(err), zap.String("session", sessionID))
 	}
 
-	if err = s.store.SaveMessage(ctx, sessionID, "user", prompt); err != nil {
+	if _, err = s.store.SaveMessage(ctx, sessionID, "user", prompt); err != nil {
 		s.logger.Warn("failed to save user message", zap.Error(err))
 	}
 
@@ -57,7 +73,7 @@ func (s *Service) Chat(ctx context.Context, sessionID, prompt string) (string, e
 
 	response := result.Response.Content.Text()
 
-	if err = s.store.SaveMessage(ctx, sessionID, "assistant", response); err != nil {
+	if _, err = s.store.SaveMessage(ctx, sessionID, "assistant", response); err != nil {
 		s.logger.Warn("failed to save assistant message", zap.Error(err))
 	}
 
@@ -132,7 +148,7 @@ func (s *Service) ChatStream(
 	// Regenerate doesn't re-save the user prompt — it's still the
 	// trailing user turn from the last exchange.
 	if !opts.Regenerate {
-		if err = s.store.SaveMessage(ctx, sessionID, "user", prompt); err != nil {
+		if _, err = s.store.SaveMessage(ctx, sessionID, "user", prompt); err != nil {
 			s.logger.Warn("failed to save user message", zap.Error(err))
 		}
 	}
@@ -330,23 +346,39 @@ func (s *Service) persistAssistantTurn(
 	}
 
 	if regenerate {
-		prior, lookupErr := s.store.LastAssistantMessage(ctx, sessionID)
-		if lookupErr == nil {
-			var branches []json.RawMessage
-			if prior.BranchesJSON != "" {
-				_ = json.Unmarshal([]byte(prior.BranchesJSON), &branches)
-			}
-			branches = append(branches, json.RawMessage(prior.Content))
-			branchesJSON, marshalErr := json.Marshal(branches)
-			if marshalErr != nil {
-				return fmt.Errorf("encoding branches: %w", marshalErr)
-			}
-			active := len(branches)
-			return s.store.UpdateBranches(ctx, prior.ID, string(contentJSON), string(branchesJSON), active)
+		if branched, branchErr := s.appendBranchOnPrior(ctx, sessionID, contentJSON); branched {
+			return branchErr
 		}
 	}
 
-	return s.store.SaveMessage(ctx, sessionID, "assistant", string(contentJSON))
+	_, err = s.store.SaveMessage(ctx, sessionID, "assistant", string(contentJSON))
+	return err
+}
+
+// appendBranchOnPrior tries to slide the prior assistant turn into
+// the branches[] of the row and overwrite content with the
+// newly-generated parts. Returns (true, _) when a prior row was
+// found and the update was attempted; (false, nil) when there's
+// no prior row to branch off of (caller falls through to a fresh
+// INSERT).
+func (s *Service) appendBranchOnPrior(
+	ctx context.Context, sessionID string, contentJSON []byte,
+) (bool, error) {
+	prior, err := s.store.LastAssistantMessage(ctx, sessionID)
+	if err != nil {
+		return false, nil //nolint:nilerr // missing prior is not an error: fall through to INSERT
+	}
+	var branches []json.RawMessage
+	if prior.BranchesJSON != "" {
+		_ = json.Unmarshal([]byte(prior.BranchesJSON), &branches)
+	}
+	branches = append(branches, json.RawMessage(prior.Content))
+	branchesJSON, marshalErr := json.Marshal(branches)
+	if marshalErr != nil {
+		return true, fmt.Errorf("encoding branches: %w", marshalErr)
+	}
+	active := len(branches)
+	return true, s.store.UpdateBranches(ctx, prior.ID, string(contentJSON), string(branchesJSON), active)
 }
 
 // PromptObject runs a one-shot, stateless structured-output query
@@ -412,52 +444,6 @@ func (s *Service) PromptObject(
 	)
 
 	return out, resp.RawText, nil
-}
-
-func (s *Service) ListSessions(ctx context.Context) ([]memory.SessionInfo, error) {
-	return s.store.ListSessions(ctx)
-}
-
-// SessionMessage is the plain wire-ready view of a stored chat message:
-// role, text, and its creation time. Compacted or summarised entries
-// already flow through the store as role=assistant, so callers get a
-// post-compaction view.
-type SessionMessage struct {
-	Role         string
-	Content      string
-	BranchesJSON string
-	ActiveBranch int32
-	CreatedAt    int64
-}
-
-// ListSessionMessages returns the recent messages stored for sessionID
-// in role/content form suitable for gRPC transport. limit <= 0 means
-// "use the store default" (LIMIT 50 today).
-func (s *Service) ListSessionMessages(ctx context.Context, sessionID string, _ int) ([]SessionMessage, error) {
-	stored, err := s.store.ListMessages(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]SessionMessage, 0, len(stored))
-	for _, m := range stored {
-		if m.Content == "" {
-			continue
-		}
-		out = append(out, SessionMessage{
-			Role:         m.Role,
-			Content:      m.Content,
-			BranchesJSON: m.BranchesJSON,
-			ActiveBranch: int32(m.ActiveBranch), //nolint:gosec // small int, daemon-bounded
-			CreatedAt:    m.CreatedAt.Unix(),
-		})
-	}
-
-	return out, nil
-}
-
-func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
-	return s.store.DeleteSession(ctx, sessionID)
 }
 
 func (s *Service) compact(ctx context.Context, sessionID string) {
