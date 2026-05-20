@@ -56,10 +56,14 @@ func BuildAgentTools() []fantasy.AgentTool {
 		agentCreateTool(client),
 		agentCreateFromSourceTool(client),
 		agentDeleteTool(client),
+		agentLinkTool(client),
+		agentUnlinkTool(client),
 		agentListAllTool(client),
 		agentInfoAnyTool(client),
 		agentExecAnyTool(client),
 		agentDeleteAnyTool(client),
+		agentLinkAnyTool(client),
+		agentUnlinkAnyTool(client),
 		imageListTool(client),
 		binListTool(client),
 		modelListTool(client),
@@ -84,6 +88,28 @@ type agentChatInput struct {
 	Ref       string `json:"ref" jsonschema:"description=Name or id of a linked agent"`
 	Prompt    string `json:"prompt" jsonschema:"description=Message to send. The target sees it as a single user turn."`
 	SessionID string `json:"session_id,omitempty" jsonschema:"description=Optional. Empty creates a fresh session; pass back the returned session_id for follow-ups."`
+}
+
+// agentLinkInput names a target agent the caller wants to gain
+// outbound access to. Optional description labels the edge.
+type agentLinkInput struct {
+	Target      string `json:"target" jsonschema:"description=Name or id of the agent to link to. After this lands you can call agent_info / agent_exec on it."`
+	Description string `json:"description,omitempty" jsonschema:"description=Optional. Short label for the edge — surfaces in the dashboard Links panel and on the target's agent_info."`
+}
+
+// agentLinkAnyInput names both endpoints. Operator-style: caller
+// picks source + target. Used by supervisor / topology agents.
+type agentLinkAnyInput struct {
+	Source      string `json:"source" jsonschema:"description=Name or id of the source agent (the one that gains outbound access)."`
+	Target      string `json:"target" jsonschema:"description=Name or id of the target agent (the one that becomes callable from source)."`
+	Description string `json:"description,omitempty" jsonschema:"description=Optional. Short label for the edge — surfaces in the dashboard Links panel and on the target's agent_info."`
+}
+
+// agentUnlinkAnyInput names the pair to unlink. No description —
+// removing an edge takes only the endpoints.
+type agentUnlinkAnyInput struct {
+	Source string `json:"source" jsonschema:"description=Name or id of the source agent."`
+	Target string `json:"target" jsonschema:"description=Name or id of the target agent to unlink from the source."`
 }
 
 func agentListTool(c *agentclient.Client) fantasy.AgentTool {
@@ -655,6 +681,136 @@ EXAMPLE:
 				return errToolResp(err)
 			}
 			return fantasy.ToolResponse{Content: "deleted " + ref}, nil
+		},
+	)
+}
+
+func agentLinkTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Add an outbound link from yourself to a target agent. After this lands you can call agent_info / agent_exec on the target.
+
+SELF-SCOPED. You are always the source. For arbitrary pairs use agent_link_any.
+
+WARNING: re-issues your JWT and bounces your runtime. Call agent_link as your LAST tool of the turn — anything queued after dies with the runtime.
+
+EXAMPLE:
+  agent_link({"target":"meteo","description":"delegated weather queries"})`
+	return fantasy.NewAgentTool(
+		"agent_link",
+		desc,
+		func(ctx context.Context, in agentLinkInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			target := strings.TrimSpace(in.Target)
+			if target == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "target is required",
+				}, nil
+			}
+			restarted, err := c.AgentLink(ctx, target, in.Description)
+			if err != nil {
+				return errToolResp(err)
+			}
+			msg := "linked → " + target
+			if restarted {
+				msg += " (you were restarted; this is your last tool of the turn)"
+			}
+			return fantasy.ToolResponse{Content: msg}, nil
+		},
+	)
+}
+
+func agentUnlinkTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Remove your own outbound link to a target agent. After this lands, agent_info / agent_exec on the target return PermissionDenied.
+
+SELF-SCOPED. For arbitrary pairs use agent_unlink_any.
+
+WARNING: re-issues your JWT and bounces your runtime. Call agent_unlink as your LAST tool of the turn.
+
+EXAMPLE:
+  agent_unlink({"target":"meteo"})`
+	return fantasy.NewAgentTool(
+		"agent_unlink",
+		desc,
+		func(ctx context.Context, in agentLinkInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			target := strings.TrimSpace(in.Target)
+			if target == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "target is required",
+				}, nil
+			}
+			restarted, err := c.AgentUnlink(ctx, target)
+			if err != nil {
+				return errToolResp(err)
+			}
+			msg := "unlinked → " + target
+			if restarted {
+				msg += " (you were restarted; this is your last tool of the turn)"
+			}
+			return fantasy.ToolResponse{Content: msg}, nil
+		},
+	)
+}
+
+func agentLinkAnyTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Add an outbound link between ANY two agents (bypasses the self-scope check on agent_link). You pick both endpoints.
+
+The SOURCE (not you) gets its JWT re-issued and runtime bounced when running — you stay alive across this call, no last-tool warning. Powerful: only available to supervisor / topology-management agents.
+
+EXAMPLE:
+  agent_link_any({"source":"orchestrator","target":"homelab","description":"k8s queries"})`
+	return fantasy.NewAgentTool(
+		"agent_link_any",
+		desc,
+		func(ctx context.Context, in agentLinkAnyInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			source := strings.TrimSpace(in.Source)
+			target := strings.TrimSpace(in.Target)
+			if source == "" || target == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "source and target are required",
+				}, nil
+			}
+			restarted, err := c.AgentLinkAny(ctx, source, target, in.Description)
+			if err != nil {
+				return errToolResp(err)
+			}
+			msg := "linked " + source + " → " + target
+			if restarted {
+				msg += " (source restarted to pick up new JWT.Links)"
+			}
+			return fantasy.ToolResponse{Content: msg}, nil
+		},
+	)
+}
+
+func agentUnlinkAnyTool(c *agentclient.Client) fantasy.AgentTool {
+	desc := `Remove an outbound link between ANY two agents (bypasses the self-scope check on agent_unlink). You pick both endpoints.
+
+The SOURCE (not you) restarts when running. Powerful — typically reserved for supervisor / topology agents.
+
+EXAMPLE:
+  agent_unlink_any({"source":"orchestrator","target":"homelab"})`
+	return fantasy.NewAgentTool(
+		"agent_unlink_any",
+		desc,
+		func(ctx context.Context, in agentUnlinkAnyInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			source := strings.TrimSpace(in.Source)
+			target := strings.TrimSpace(in.Target)
+			if source == "" || target == "" {
+				return fantasy.ToolResponse{
+					IsError: true,
+					Content: "source and target are required",
+				}, nil
+			}
+			restarted, err := c.AgentUnlinkAny(ctx, source, target)
+			if err != nil {
+				return errToolResp(err)
+			}
+			msg := "unlinked " + source + " → " + target
+			if restarted {
+				msg += " (source restarted to pick up new JWT.Links)"
+			}
+			return fantasy.ToolResponse{Content: msg}, nil
 		},
 	)
 }

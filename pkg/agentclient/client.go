@@ -344,6 +344,71 @@ func (c *Client) AgentDeleteAny(ctx context.Context, ref string) error {
 	return err
 }
 
+// AgentLink adds an outbound edge from the caller to target.
+// Returns whether the caller's runtime was restarted — when true
+// the JWT.Links claim has been refreshed and the model should
+// treat this as its last tool call of the turn.
+func (c *Client) AgentLink(ctx context.Context, target, description string) (bool, error) {
+	if err := c.ensure(); err != nil {
+		return false, err
+	}
+	resp, err := c.rt.AgentLink(ctx, &daemonv1.AgentLinkRequest{
+		Target:      target,
+		Description: description,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetRestarted(), nil
+}
+
+// AgentUnlink removes the caller's outbound edge to target.
+// Same restart-as-last-tool contract as AgentLink.
+func (c *Client) AgentUnlink(ctx context.Context, target string) (bool, error) {
+	if err := c.ensure(); err != nil {
+		return false, err
+	}
+	resp, err := c.rt.AgentUnlink(ctx, &daemonv1.AgentUnlinkRequest{Target: target})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetRestarted(), nil
+}
+
+// AgentLinkAny adds an outbound edge between any two agents.
+// Bypass variant — the caller picks both endpoints. The source
+// (not the caller) is the agent that gets restarted when running.
+func (c *Client) AgentLinkAny(ctx context.Context, source, target, description string) (bool, error) {
+	if err := c.ensure(); err != nil {
+		return false, err
+	}
+	resp, err := c.rt.AgentLinkAny(ctx, &daemonv1.AgentLinkAnyRequest{
+		Source:      source,
+		Target:      target,
+		Description: description,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetRestarted(), nil
+}
+
+// AgentUnlinkAny removes an outbound edge between any two agents.
+// Bypass variant of AgentUnlink.
+func (c *Client) AgentUnlinkAny(ctx context.Context, source, target string) (bool, error) {
+	if err := c.ensure(); err != nil {
+		return false, err
+	}
+	resp, err := c.rt.AgentUnlinkAny(ctx, &daemonv1.AgentUnlinkAnyRequest{
+		Source: source,
+		Target: target,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetRestarted(), nil
+}
+
 // ImageList returns the agent-image catalogue.
 func (c *Client) ImageList(ctx context.Context) ([]ImageRowView, error) {
 	if err := c.ensure(); err != nil {
